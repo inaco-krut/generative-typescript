@@ -18,6 +18,8 @@ export interface Params {
   shade: number;
   grain: number;
   fill: number;
+  fillAuto: boolean; // true: letter fill uses the palette's index colour
+  fillColor: string; // custom letter fill colour, used when fillAuto is off
   animate: boolean;
   // static detail layer (shown when animation is off)
   details: boolean;
@@ -53,6 +55,8 @@ export const defaultParams: Params = {
   shade: 0.12,
   grain: 0.035,
   fill: 0.0,
+  fillAuto: true,
+  fillColor: '#111111',
   animate: true,
   details: true,
   showLabels: true,

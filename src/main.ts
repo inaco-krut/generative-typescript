@@ -53,6 +53,7 @@ const uniforms = {
   uPaper: { value: color('#000') },
   uInk: { value: color('#000') },
   uIndex: { value: color('#000') },
+  uFillCol: { value: color('#000') },
   uLow: { value: color('#000') },
   uMid: { value: color('#000') },
   uHigh: { value: color('#000') },
@@ -135,10 +136,16 @@ function applyPalette(): void {
   uniforms.uLow.value.set(p.low);
   uniforms.uMid.value.set(p.mid);
   uniforms.uHigh.value.set(p.high);
+  syncFillColor();
   document.body.style.background = p.paper;
 }
 
+function syncFillColor(): void {
+  uniforms.uFillCol.value.set(params.fillAuto ? palettes[params.palette].index : params.fillColor);
+}
+
 function syncUniforms(): void {
+  syncFillColor();
   uniforms.uMode.value = params.mode;
   uniforms.uSize.value = params.size;
   uniforms.uInfluence.value = params.influence;
@@ -172,6 +179,7 @@ function applyPreset(name: string): void {
   applyPalette();
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
   fillCtl.disable(params.textAuto);
+  letterColorCtl.disable(params.fillAuto);
   setGlyph();
 }
 const presetCtl = gui.add(presetState, 'preset', allPresetNames()).name('preset').onChange(applyPreset);
@@ -246,6 +254,9 @@ gStyle.add(params, 'tint', 0, 1, 0.01).name('elevation tint');
 gStyle.add(params, 'shade', 0, 1, 0.01).name('hillshade');
 gStyle.add(params, 'grain', 0, 0.2, 0.001).name('paper grain');
 gStyle.add(params, 'fill', 0, 1, 0.01).name('letter fill');
+const letterColorCtl = gStyle.addColor(params, 'fillColor').name('letter fill colour');
+gStyle.add(params, 'fillAuto').name('letter fill from palette').onChange((auto: boolean) => letterColorCtl.disable(auto));
+letterColorCtl.disable(params.fillAuto);
 
 const actions = {
   randomize() {

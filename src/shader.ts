@@ -36,6 +36,7 @@ uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tr
 uniform vec3 uPaper;
 uniform vec3 uInk;
 uniform vec3 uIndex;
+uniform vec3 uFillCol;
 uniform vec3 uLow;
 uniform vec3 uMid;
 uniform vec3 uHigh;
@@ -160,7 +161,7 @@ void main() {
   // glyph fill
   float fd = max(fwidth(d), 1e-6);
   float inside = 1.0 - smoothstep(-fd, fd, d);
-  col = mix(col, uIndex, inside * uFill);
+  col = mix(col, uFillCol, inside * uFill);
 
   // contours
   float minor = lineMask(dist, fw, uLineW);
