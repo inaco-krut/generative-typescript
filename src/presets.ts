@@ -72,4 +72,24 @@ export const presets: Record<string, Partial<Params>> = {
   },
 };
 
-export const presetNames = Object.keys(presets);
+export const builtinPresetNames = Object.keys(presets);
+
+// --- user presets, kept in this browser's localStorage ---
+const STORAGE_KEY = 'typographic-topography:presets';
+
+export function loadUserPresets(): Record<string, Params> {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, Params>;
+  } catch {
+    return {};
+  }
+}
+
+export function storeUserPresets(all: Record<string, Params>): boolean {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    return true;
+  } catch {
+    return false; // storage blocked (private window etc.)
+  }
+}

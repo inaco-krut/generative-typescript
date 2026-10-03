@@ -4,7 +4,9 @@ import { fragmentShader, vertexShader } from './shader';
 import { SDF_SIZE, renderGlyphSDF } from './glyph';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
-import { defaultParams, presets, presetNames, type Params } from './presets';
+import {
+  builtinPresetNames, defaultParams, loadUserPresets, presets, storeUserPresets, type Params,
+} from './presets';
 
 const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
 
@@ -138,14 +140,48 @@ function syncUniforms(): void {
 (window as unknown as { __params: typeof params }).__params = params; // handy for scripted tests
 const gui = new GUI({ title: 'Typographic Topography' });
 
-const presetState = { preset: 'R&D Mountain' };
+const userPresets = loadUserPresets();
+const allPresetNames = () => [...builtinPresetNames, ...Object.keys(userPresets).filter((n) => !(n in presets))];
+const presetState = { preset: 'R&D Mountain', name: '' };
+
 function applyPreset(name: string): void {
-  Object.assign(params, defaultParams, presets[name]);
+  Object.assign(params, defaultParams, presets[name] ?? userPresets[name]);
+  if (!fonts.some((f) => f.family === params.font)) params.font = defaultParams.font; // e.g. an uploaded font from another session
   applyPalette();
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
   setGlyph();
 }
-gui.add(presetState, 'preset', presetNames).name('preset').onChange(applyPreset);
+const presetCtl = gui.add(presetState, 'preset', allPresetNames()).name('preset').onChange(applyPreset);
+const nameCtl = gui.add(presetState, 'name').name('save as…');
+
+const presetActions = {
+  save() {
+    let name = presetState.name.trim();
+    if (!name) {
+      nameCtl.domElement.querySelector('input')?.focus();
+      return;
+    }
+    if (name in presets) name += ' (mine)'; // built-ins stay untouched
+    userPresets[name] = { ...params };
+    const stored = storeUserPresets(userPresets);
+    presetCtl.options(allPresetNames());
+    presetState.preset = name;
+    presetState.name = '';
+    presetCtl.updateDisplay();
+    nameCtl.updateDisplay();
+    if (!stored) console.warn('Could not write to localStorage; preset lasts until you reload.');
+  },
+  remove() {
+    if (!(presetState.preset in userPresets)) return; // built-ins cannot be deleted
+    delete userPresets[presetState.preset];
+    storeUserPresets(userPresets);
+    presetState.preset = 'Default';
+    presetCtl.options(allPresetNames());
+    applyPreset('Default');
+  },
+};
+gui.add(presetActions, 'save').name('save preset');
+gui.add(presetActions, 'remove').name('delete selected preset');
 
 const gGlyph = gui.addFolder('Glyph');
 gGlyph.add(params, 'text').name('character(s)').onFinishChange(setGlyph);
