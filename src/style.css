@@ -1,0 +1,9 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#hint {
+  position: fixed; left: 16px; bottom: 14px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(255, 255, 255, 0.75); mix-blend-mode: difference;
+  pointer-events: none; user-select: none;
+}
+#hint b { font-weight: 700; }
