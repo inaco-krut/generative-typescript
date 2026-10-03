@@ -3,6 +3,8 @@ export interface Params {
   font: string;
   mode: number; // 0 offset lines, 1 mountain, 2 basin
   size: number;
+  posX: number; // glyph offset from the centre, in short-side units (+x right)
+  posY: number; // (+y up)
   influence: number;
   slope: number;
   wobble: number;
@@ -41,6 +43,8 @@ export const defaultParams: Params = {
   font: 'Playfair Display',
   mode: 0,
   size: 1.0,
+  posX: 0,
+  posY: 0,
   influence: 0.3,
   slope: 1.0,
   wobble: 0.15,

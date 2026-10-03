@@ -15,6 +15,7 @@ uniform float uMorph;
 
 uniform int uMode;          // 0 offset lines, 1 mountain, 2 basin
 uniform float uSize;        // glyph texture extent, in short-side units
+uniform vec2 uOffset;       // glyph position, in short-side units
 uniform float uInfluence;   // how far the glyph reshapes the land
 uniform float uSlope;       // glyph height gradient
 uniform float uWobble;      // terrain amplitude kept at the glyph edge (0..1)
@@ -109,7 +110,7 @@ float terrain(vec2 q) {
 
 // Signed distance to the glyph in short-side units (positive outside).
 float glyphDist(vec2 q) {
-  vec2 uv = q / uSize + 0.5;
+  vec2 uv = (q - uOffset) / uSize + 0.5;
   vec2 c = clamp(uv, 0.0, 1.0);
   float d = mix(texture(uFrom, c).r, texture(uTo, c).r, uMorph);
   d += length(uv - c); // continue the field past the texture border
@@ -192,6 +193,7 @@ uniform sampler2D uFrom;
 uniform sampler2D uTo;
 uniform float uMorph;
 uniform float uSize;
+uniform vec2 uOffset;
 uniform float uFill;
 
 vec3 sceneAt(vec2 uv) {
@@ -204,7 +206,7 @@ vec3 sceneAt(vec2 uv) {
 }
 
 float glyphDist(vec2 q) {
-  vec2 uv = q / uSize + 0.5;
+  vec2 uv = (q - uOffset) / uSize + 0.5;
   vec2 c = clamp(uv, 0.0, 1.0);
   float d = mix(texture(uFrom, c).r, texture(uTo, c).r, uMorph);
   d += length(uv - c);

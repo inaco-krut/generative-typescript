@@ -33,6 +33,7 @@ const uniforms = {
   uMorph: { value: 1 },
   uMode: { value: params.mode },
   uSize: { value: params.size },
+  uOffset: { value: new THREE.Vector2(params.posX, params.posY) },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
   uWobble: { value: params.wobble },
@@ -98,6 +99,7 @@ const postUniforms = {
   uTo: uniforms.uTo,
   uMorph: uniforms.uMorph,
   uSize: uniforms.uSize,
+  uOffset: uniforms.uOffset,
   uFill: uniforms.uFill,
 };
 const postScene = new THREE.Scene();
@@ -134,8 +136,26 @@ const fonts: FontDef[] = [...builtinFonts];
 let loadToken = 0;
 let currentSDF: Float32Array | null = null; // CPU copy, used to keep details clear of the glyph
 let sdfVersion = 0;
+let glyphBounds = { u0: 0.25, u1: 0.75, v0: 0.25, v1: 0.75 }; // glyph extent in texture uv (v up)
 let morphStart = -1;
 const MORPH_SECONDS = 0.9;
+
+function boundsOf(sdf: Float32Array): typeof glyphBounds {
+  const n = SDF_SIZE;
+  let c0 = n, c1 = -1, r0 = n, r1 = -1;
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (sdf[r * n + c] < 0) {
+        if (c < c0) c0 = c;
+        if (c > c1) c1 = c;
+        if (r < r0) r0 = r;
+        if (r > r1) r1 = r;
+      }
+    }
+  }
+  if (c1 < 0) return glyphBounds;
+  return { u0: c0 / n, u1: (c1 + 1) / n, v0: 1 - (r1 + 1) / n, v1: 1 - r0 / n };
+}
 
 async function setGlyph(): Promise<void> {
   const text = params.text || ' ';
@@ -146,6 +166,7 @@ async function setGlyph(): Promise<void> {
 
   const sdf = renderGlyphSDF(text, font);
   currentSDF = sdf;
+  glyphBounds = boundsOf(sdf);
   sdfVersion++;
   const next = makeTexture(sdf);
   const old = uniforms.uFrom.value;
@@ -179,6 +200,7 @@ function syncUniforms(): void {
   postUniforms.uGlass.value = params.glass;
   uniforms.uMode.value = params.mode;
   uniforms.uSize.value = params.size;
+  uniforms.uOffset.value.set(params.posX, params.posY);
   uniforms.uInfluence.value = params.influence;
   uniforms.uSlope.value = params.slope;
   uniforms.uWobble.value = params.wobble;
@@ -199,6 +221,7 @@ function syncUniforms(): void {
 
 (window as unknown as { __params: typeof params }).__params = params; // handy for scripted tests
 const gui = new GUI({ title: 'Typographic Topography' });
+const refreshGui = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
 
 const userPresets = loadUserPresets();
 const allPresetNames = () => [...builtinPresetNames, ...Object.keys(userPresets).filter((n) => !(n in presets))];
@@ -249,7 +272,21 @@ const gGlyph = gui.addFolder('Glyph');
 gGlyph.add(params, 'text').name('character(s)').onFinishChange(setGlyph);
 const fontCtl = gGlyph.add(params, 'font', fonts.map((f) => f.family)).onChange(setGlyph);
 gGlyph.add(params, 'mode', MODES).name('letter acts as');
-gGlyph.add(params, 'size', 0.5, 2, 0.01).name('glyph size');
+gGlyph.add(params, 'size', 0.2, 4, 0.01).name('glyph size');
+gGlyph.add(params, 'posX', -1, 1, 0.001).name('position x');
+gGlyph.add(params, 'posY', -1, 1, 0.001).name('position y');
+gGlyph.add(
+  {
+    reset() {
+      const base = presets[presetState.preset] ?? userPresets[presetState.preset] ?? {};
+      params.posX = 0;
+      params.posY = 0;
+      params.size = base.size ?? defaultParams.size;
+      refreshGui();
+    },
+  },
+  'reset',
+).name('reset position & size');
 gGlyph.add(params, 'influence', 0.02, 0.8, 0.01).name('influence radius');
 gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
@@ -373,8 +410,8 @@ function glyphDistPx(cx: number, cy: number, W: number, H: number): number {
   if (!currentSDF) return 1e9;
   const n = SDF_SIZE;
   const m = Math.min(W, H);
-  const u = (cx - W / 2) / m / params.size + 0.5;
-  const v = (H / 2 - cy) / m / params.size + 0.5;
+  const u = ((cx - W / 2) / m - params.posX) / params.size + 0.5;
+  const v = ((H / 2 - cy) / m - params.posY) / params.size + 0.5;
   const cu = Math.min(Math.max(u, 0), 1);
   const cv = Math.min(Math.max(v, 0), 1);
   const col = Math.min(n - 1, Math.floor(cu * n));
@@ -430,7 +467,11 @@ async function computeDetails(key: string): Promise<void> {
     for (let i = 0; i < field.length; i++) field[i] = buf[i * 4];
 
     renderDetails(
-      { field, gw, gh, W, H, glyphDist: (x, y) => glyphDistPx(x, y, W, H) },
+      {
+        field, gw, gh, W, H,
+        cx: W / 2 + params.posX * Math.min(W, H),
+        cy: H / 2 - params.posY * Math.min(W, H),
+        glyphDist: (x, y) => glyphDistPx(x, y, W, H) },
       {
         labels: params.showLabels,
         spots: params.showSpots,
@@ -477,6 +518,118 @@ function updateDetails(): void {
   if (performance.now() >= dueAt) void computeDetails(key);
 }
 
+// ---------------------------------------------------------------- select / move / scale the glyph
+
+const selBox = document.createElement('div');
+selBox.id = 'selection';
+for (const corner of ['nw', 'ne', 'sw', 'se'] as const) {
+  const h = document.createElement('div');
+  h.className = `handle ${corner}`;
+  h.addEventListener('pointerdown', (e) => beginScale(e));
+  selBox.appendChild(h);
+}
+document.body.appendChild(selBox);
+
+let selected = false;
+type Drag =
+  | { kind: 'move'; sx: number; sy: number; px: number; py: number }
+  | { kind: 'scale'; cx: number; cy: number; d0: number; size0: number };
+let drag: Drag | null = null;
+const SEL_PAD = 8;
+
+/** Glyph centre and bounding box in CSS px. */
+function glyphBox() {
+  const m = Math.min(window.innerWidth, window.innerHeight);
+  const cx = window.innerWidth / 2 + params.posX * m;
+  const cy = window.innerHeight / 2 - params.posY * m;
+  const b = glyphBounds;
+  return {
+    m, cx, cy,
+    x0: cx + (b.u0 - 0.5) * params.size * m,
+    x1: cx + (b.u1 - 0.5) * params.size * m,
+    y0: cy - (b.v1 - 0.5) * params.size * m,
+    y1: cy - (b.v0 - 0.5) * params.size * m,
+  };
+}
+
+function hitGlyph(x: number, y: number): boolean {
+  const g = glyphBox();
+  return x >= g.x0 - SEL_PAD && x <= g.x1 + SEL_PAD && y >= g.y0 - SEL_PAD && y <= g.y1 + SEL_PAD;
+}
+
+function beginScale(e: PointerEvent): void {
+  e.preventDefault();
+  e.stopPropagation();
+  const g = glyphBox();
+  drag = { kind: 'scale', cx: g.cx, cy: g.cy, d0: Math.max(10, Math.hypot(e.clientX - g.cx, e.clientY - g.cy)), size0: params.size };
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(Math.max(v, lo), hi) * 1000) / 1000;
+
+canvas.style.touchAction = 'none';
+canvas.addEventListener('pointerdown', (e) => {
+  if (hitGlyph(e.clientX, e.clientY)) {
+    selected = true;
+    drag = { kind: 'move', sx: e.clientX, sy: e.clientY, px: params.posX, py: params.posY };
+    e.preventDefault();
+  } else {
+    selected = false;
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (drag) return;
+  canvas.style.cursor = hitGlyph(e.clientX, e.clientY) ? (selected ? 'move' : 'pointer') : 'default';
+});
+window.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (drag.kind === 'move') {
+    const m = Math.min(window.innerWidth, window.innerHeight);
+    params.posX = clamp(drag.px + (e.clientX - drag.sx) / m, -1.5, 1.5);
+    params.posY = clamp(drag.py - (e.clientY - drag.sy) / m, -1.5, 1.5);
+  } else {
+    const d = Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy);
+    params.size = clamp(drag.size0 * (d / drag.d0), 0.2, 4);
+  }
+  refreshGui();
+});
+window.addEventListener('pointerup', () => { drag = null; });
+canvas.addEventListener(
+  'wheel',
+  (e) => {
+    if (!selected) return;
+    e.preventDefault();
+    params.size = clamp(params.size * Math.exp(-e.deltaY * 0.0015), 0.2, 4);
+    refreshGui();
+  },
+  { passive: false },
+);
+window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement;
+  if (!selected || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
+  const step = (e.shiftKey ? 0.02 : 0.004);
+  const moves: Record<string, [number, number]> = {
+    ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step],
+  };
+  if (e.key === 'Escape') {
+    selected = false;
+  } else if (moves[e.key]) {
+    e.preventDefault();
+    params.posX = clamp(params.posX + moves[e.key][0], -1.5, 1.5);
+    params.posY = clamp(params.posY + moves[e.key][1], -1.5, 1.5);
+    refreshGui();
+  }
+});
+
+function updateSelectionUI(): void {
+  selBox.style.display = selected ? 'block' : 'none';
+  if (!selected) return;
+  const g = glyphBox();
+  selBox.style.left = `${g.x0 - SEL_PAD}px`;
+  selBox.style.top = `${g.y0 - SEL_PAD}px`;
+  selBox.style.width = `${g.x1 - g.x0 + SEL_PAD * 2}px`;
+  selBox.style.height = `${g.y1 - g.y0 + SEL_PAD * 2}px`;
+}
+
 // ---------------------------------------------------------------- loop
 
 const clock = new THREE.Clock();
@@ -496,6 +649,7 @@ function frame(): void {
   syncUniforms();
   renderFrame();
   updateDetails();
+  updateSelectionUI();
   requestAnimationFrame(frame);
 }
 

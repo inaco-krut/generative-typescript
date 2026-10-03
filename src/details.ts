@@ -22,6 +22,8 @@ export interface DetailInput {
   gh: number;
   W: number; // overlay size in px
   H: number;
+  cx: number; // glyph centre in canvas px (annotations cluster around it)
+  cy: number;
   glyphDist: (x: number, y: number) => number; // canvas px -> distance to glyph in px (negative inside)
 }
 
@@ -234,6 +236,8 @@ const icons: IconFn[] = [
 
 export function renderDetails(inp: DetailInput, o: DetailOptions, ctx: Ctx, mask: Ctx): void {
   const { W, H, glyphDist } = inp;
+  const cx0 = inp.cx;
+  const cy0 = inp.cy;
   const u = Math.min(W, H) / 800;
   const rng = mulberry32(o.seed);
   const placed: Rect[] = [];
@@ -343,8 +347,8 @@ export function renderDetails(inp: DetailInput, o: DetailOptions, ctx: Ctx, mask
       for (let attempt = 0; attempt < 600; attempt++) {
         const ang = rng() * Math.PI * 2;
         const r = 0.1 + 0.8 * Math.pow(rng(), 1.15);
-        const cx = W / 2 + Math.cos(ang) * r * (W / 2 - edge);
-        const cy = H / 2 + Math.sin(ang) * r * (H / 2 - edge);
+        const cx = cx0 + Math.cos(ang) * r * (W / 2 - edge);
+        const cy = cy0 + Math.sin(ang) * r * (H / 2 - edge);
         const rect: Rect = { x: cx, y: cy, w: item.w, h: item.h, a: 0 };
         if (!inside(rect) || !free(rect, 9 * u) || !clearOfGlyph(rect, 12 * u)) continue;
         placed.push(rect);
