@@ -59,8 +59,8 @@ export const defaultParams: Params = {
   labelStep: 111,
   labelBase: 500,
   labelSize: 9,
-  words: 'CONTOUR, TERRAIN, ELEVATION, TOPOGRAPHY',
-  caption: 'ABSTRACT CONTOUR LINES DEFINE THE RHYTHMIC STRUCTURE OF A TOPOGRAPHICAL',
+  words: 'RIDGE, BASIN, SUMMIT, BEARING',
+  caption: 'LINES OF EQUAL HEIGHT TRACE THE QUIET SHAPE OF THE LAND BENEATH THE LETTER',
 };
 
 // A preset only lists what differs from the defaults. To add one: tweak the panel, press
