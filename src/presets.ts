@@ -70,6 +70,28 @@ export const presets: Record<string, Partial<Params>> = {
     fill: 0.75,
     animate: true,
   },
+  'Cyclopathic Few': {
+    text: 'cyclopathic few',
+    font: 'Roboto Mono',
+    mode: 1,
+    size: 0.8,
+    influence: 0.27,
+    slope: 0.27,
+    wobble: 0.08,
+    rough: 0.12,
+    freq: 2.04,
+    warp: 0,
+    drift: 0.152,
+    seed: 3.854,
+    spacing: 0.03,
+    lineWidth: 1.1,
+    palette: 'Midnight',
+    tint: 0.39,
+    shade: 0.04,
+    grain: 0.067,
+    fill: 1,
+    animate: true,
+  },
 };
 
 export const builtinPresetNames = Object.keys(presets);
