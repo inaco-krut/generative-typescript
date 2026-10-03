@@ -4,31 +4,11 @@ import { fragmentShader, vertexShader } from './shader';
 import { SDF_SIZE, renderGlyphSDF } from './glyph';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
+import { defaultParams, presets, presetNames, type Params } from './presets';
 
 const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
 
-const params = {
-  text: 'A',
-  font: 'Playfair Display',
-  mode: MODES['Offset lines'] as number,
-  size: 1.0,
-  influence: 0.3,
-  slope: 1.0,
-  wobble: 0.15,
-  rough: 0.32,
-  freq: 1.5,
-  warp: 0.45,
-  drift: 0.04,
-  seed: 0.42,
-  spacing: 0.014,
-  lineWidth: 1.1,
-  palette: 'Survey',
-  tint: 0.7,
-  shade: 0.12,
-  grain: 0.035,
-  fill: 0.0,
-  animate: true,
-};
+const params: Params = { ...defaultParams, ...presets['R&D Mountain'] };
 
 // ---------------------------------------------------------------- renderer
 
@@ -158,6 +138,15 @@ function syncUniforms(): void {
 (window as unknown as { __params: typeof params }).__params = params; // handy for scripted tests
 const gui = new GUI({ title: 'Typographic Topography' });
 
+const presetState = { preset: 'R&D Mountain' };
+function applyPreset(name: string): void {
+  Object.assign(params, defaultParams, presets[name]);
+  applyPalette();
+  gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  setGlyph();
+}
+gui.add(presetState, 'preset', presetNames).name('preset').onChange(applyPreset);
+
 const gGlyph = gui.addFolder('Glyph');
 gGlyph.add(params, 'text').name('character(s)').onFinishChange(setGlyph);
 const fontCtl = gGlyph.add(params, 'font', fonts.map((f) => f.family)).onChange(setGlyph);
@@ -210,11 +199,19 @@ const actions = {
   uploadFont() {
     fileInput.click();
   },
+  copySettings() {
+    const json = JSON.stringify(params, null, 2);
+    navigator.clipboard.writeText(json).then(
+      () => console.info('Settings copied:\n' + json),
+      () => console.info(json),
+    );
+  },
 };
 gui.add(params, 'animate').name('animate terrain');
 gui.add(actions, 'randomize').name('randomize (space)');
 gui.add(actions, 'uploadFont').name('upload font…');
 gui.add(actions, 'savePNG').name('save PNG');
+gui.add(actions, 'copySettings').name('copy settings (JSON)');
 
 const fileInput = document.getElementById('font-file') as HTMLInputElement;
 fileInput.addEventListener('change', async () => {
