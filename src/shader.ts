@@ -176,3 +176,86 @@ void main() {
   gl_FragColor = vec4(col, 1.0);
 }
 `;
+
+// Final pass: composites the detail layer over the map, then applies a glass overlay
+// (barrel distortion, chromatic aberration towards the corners, sheen and edge light).
+// The main letters are excluded so they stay crisp and undistorted.
+export const postFragmentShader = /* glsl */ `
+precision highp float;
+
+uniform vec2 uRes;
+uniform sampler2D uScene;
+uniform sampler2D uOverlay;
+uniform float uOverlayOn;
+uniform float uGlass;
+uniform sampler2D uFrom;
+uniform sampler2D uTo;
+uniform float uMorph;
+uniform float uSize;
+uniform float uFill;
+
+vec3 sceneAt(vec2 uv) {
+  vec3 c = texture(uScene, uv).rgb;
+  if (uOverlayOn > 0.5) {
+    vec4 o = texture(uOverlay, uv);
+    c = mix(c, o.rgb, o.a);
+  }
+  return c;
+}
+
+float glyphDist(vec2 q) {
+  vec2 uv = q / uSize + 0.5;
+  vec2 c = clamp(uv, 0.0, 1.0);
+  float d = mix(texture(uFrom, c).r, texture(uTo, c).r, uMorph);
+  d += length(uv - c);
+  return d * uSize;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 plain = sceneAt(uv);
+  if (uGlass < 0.001) {
+    gl_FragColor = vec4(plain, 1.0);
+    return;
+  }
+
+  float aspect = uRes.x / uRes.y;
+  vec2 c = uv - 0.5;
+  vec2 cp = c * vec2(aspect, 1.0);                       // isotropic coordinates
+  float r = length(cp) / length(vec2(aspect, 1.0) * 0.5); // 0 centre .. 1 corners
+  float r2 = r * r;
+
+  // barrel distortion: corners sample slightly inwards, so no empty borders appear
+  vec2 uvd = 0.5 + c * (1.0 - uGlass * 0.06 * r2);
+
+  // chromatic aberration: spectral smear along the radial direction, strongest in the corners
+  vec2 dir = normalize(cp + 1e-5) / vec2(aspect, 1.0);
+  float off = uGlass * 0.016 * pow(r, 2.4);
+  vec3 acc = vec3(0.0);
+  vec3 wsum = vec3(0.0);
+  for (int i = 0; i < 7; i++) {
+    float t = float(i) / 6.0;
+    vec3 w = vec3(smoothstep(0.3, 1.0, t), max(0.0, 1.0 - abs(t - 0.5) * 2.5), smoothstep(0.7, 0.0, t));
+    acc += sceneAt(uvd + dir * off * (t - 0.5) * 2.0) * w;
+    wsum += w;
+  }
+  vec3 col = acc / wsum;
+
+  // glass: soft diagonal sheen, brighter rim towards the corners, thin edge light, faint cool tint
+  float diag = dot(c, normalize(vec2(0.7, 1.0)));
+  float sheen = exp(-pow((diag - 0.12) * 5.5, 2.0)) * 0.09 + exp(-pow((diag + 0.24) * 14.0, 2.0)) * 0.045;
+  float rim = smoothstep(0.55, 1.0, r);
+  float edgePx = min(min(uv.x, 1.0 - uv.x) * uRes.x, min(uv.y, 1.0 - uv.y) * uRes.y);
+  float edge = 1.0 - smoothstep(0.0, 2.5 * uRes.y / 800.0, edgePx);
+  col *= mix(vec3(1.0), vec3(0.96, 0.99, 1.03), 0.5 * uGlass);
+  col *= 1.0 - rim * 0.12 * uGlass;
+  col += uGlass * (sheen + rim * 0.06 + edge * 0.16);
+
+  // keep the main letters out of the glass
+  vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
+  float d = glyphDist(q);
+  float fd = max(fwidth(d), 1e-6);
+  float excl = (1.0 - smoothstep(-fd, fd, d)) * smoothstep(0.0, 0.25, uFill);
+  gl_FragColor = vec4(mix(col, plain, excl), 1.0);
+}
+`;

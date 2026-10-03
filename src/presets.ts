@@ -17,6 +17,7 @@ export interface Params {
   tint: number;
   shade: number;
   grain: number;
+  glass: number; // glass overlay strength, 0 = off
   fill: number;
   fillAuto: boolean; // true: letter fill uses the palette's index colour
   fillColor: string; // custom letter fill colour, used when fillAuto is off
@@ -54,6 +55,7 @@ export const defaultParams: Params = {
   tint: 0.7,
   shade: 0.12,
   grain: 0.035,
+  glass: 0,
   fill: 0.0,
   fillAuto: true,
   fillColor: '#111111',

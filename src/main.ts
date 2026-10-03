@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
-import { fragmentShader, vertexShader } from './shader';
+import { fragmentShader, postFragmentShader, vertexShader } from './shader';
 import { SDF_SIZE, renderGlyphSDF } from './glyph';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
@@ -79,19 +79,49 @@ function makeTexture(sdf: Float32Array): THREE.DataTexture {
 
 // detail layer: a transparent canvas on top for labels, plus a mask that knocks contour lines out behind them
 const overlay = document.createElement('canvas');
-overlay.id = 'overlay';
-document.body.appendChild(overlay);
 const overlayCtx = overlay.getContext('2d')!;
 const maskCanvas = document.createElement('canvas');
 const maskCtx = maskCanvas.getContext('2d')!;
 const maskTex = new THREE.CanvasTexture(maskCanvas);
 uniforms.uMask.value = maskTex;
+const overlayTex = new THREE.CanvasTexture(overlay);
+
+// map -> sceneRT, then a final pass adds the detail layer and the glass overlay
+const sceneRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
+const postUniforms = {
+  uRes: uniforms.uRes,
+  uScene: { value: sceneRT.texture },
+  uOverlay: { value: overlayTex },
+  uOverlayOn: { value: 0 },
+  uGlass: { value: params.glass },
+  uFrom: uniforms.uFrom,
+  uTo: uniforms.uTo,
+  uMorph: uniforms.uMorph,
+  uSize: uniforms.uSize,
+  uFill: uniforms.uFill,
+};
+const postScene = new THREE.Scene();
+postScene.add(
+  new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.ShaderMaterial({ uniforms: postUniforms, vertexShader, fragmentShader: postFragmentShader }),
+  ),
+);
+
+function renderFrame(): void {
+  renderer.setRenderTarget(sceneRT);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, camera);
+}
 
 function resize(): void {
   renderer.setSize(window.innerWidth, window.innerHeight, false);
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   uniforms.uRes.value.copy(size);
   maskTex.dispose(); // re-upload at the new size
+  overlayTex.dispose();
+  sceneRT.setSize(size.x, size.y);
   overlay.width = maskCanvas.width = size.x;
   overlay.height = maskCanvas.height = size.y;
 }
@@ -146,6 +176,7 @@ function syncFillColor(): void {
 
 function syncUniforms(): void {
   syncFillColor();
+  postUniforms.uGlass.value = params.glass;
   uniforms.uMode.value = params.mode;
   uniforms.uSize.value = params.size;
   uniforms.uInfluence.value = params.influence;
@@ -253,6 +284,7 @@ gStyle.add(params, 'palette', paletteNames).onChange(applyPalette);
 gStyle.add(params, 'tint', 0, 1, 0.01).name('elevation tint');
 gStyle.add(params, 'shade', 0, 1, 0.01).name('hillshade');
 gStyle.add(params, 'grain', 0, 0.2, 0.001).name('paper grain');
+gStyle.add(params, 'glass', 0, 1, 0.01).name('glass overlay');
 gStyle.add(params, 'fill', 0, 1, 0.01).name('letter fill');
 const letterColorCtl = gStyle.addColor(params, 'fillColor').name('letter fill colour');
 gStyle.add(params, 'fillAuto').name('letter fill from palette').onChange((auto: boolean) => letterColorCtl.disable(auto));
@@ -270,15 +302,8 @@ const actions = {
     gui.controllersRecursive().forEach((c) => c.updateDisplay());
   },
   savePNG() {
-    renderer.render(scene, camera);
-    // composite the detail layer (if showing) onto a copy of the WebGL frame
-    const out = document.createElement('canvas');
-    out.width = canvas.width;
-    out.height = canvas.height;
-    const octx = out.getContext('2d')!;
-    octx.drawImage(canvas, 0, 0);
-    if (overlay.style.opacity === '1') octx.drawImage(overlay, 0, 0);
-    out.toBlob((blob) => {
+    renderFrame();
+    canvas.toBlob((blob) => {
       if (!blob) return;
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -358,7 +383,7 @@ function glyphDistPx(cx: number, cy: number, W: number, H: number): number {
 }
 
 function hideDetails(): void {
-  overlay.style.opacity = '0';
+  postUniforms.uOverlayOn.value = 0;
   uniforms.uMaskOn.value = 0;
   shownKey = '';
 }
@@ -424,8 +449,9 @@ async function computeDetails(key: string): Promise<void> {
       maskCtx,
     );
     maskTex.needsUpdate = true;
+    overlayTex.needsUpdate = true;
     uniforms.uMaskOn.value = 1;
-    overlay.style.opacity = '1';
+    postUniforms.uOverlayOn.value = 1;
     shownKey = key;
   } finally {
     computing = false;
@@ -468,7 +494,7 @@ function frame(): void {
   }
 
   syncUniforms();
-  renderer.render(scene, camera);
+  renderFrame();
   updateDetails();
   requestAnimationFrame(frame);
 }
