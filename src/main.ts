@@ -4,6 +4,7 @@ import { fragmentShader, vertexShader } from './shader';
 import { SDF_SIZE, renderGlyphSDF } from './glyph';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
+import { renderDetails } from './details';
 import {
   builtinPresetNames, defaultParams, loadUserPresets, presets, storeUserPresets, type Params,
 } from './presets';
@@ -46,6 +47,9 @@ const uniforms = {
   uShade: { value: params.shade },
   uGrain: { value: params.grain },
   uFill: { value: params.fill },
+  uMask: { value: null as THREE.Texture | null },
+  uMaskOn: { value: 0 },
+  uOutputH: { value: 0 },
   uPaper: { value: color('#000') },
   uInk: { value: color('#000') },
   uIndex: { value: color('#000') },
@@ -72,10 +76,23 @@ function makeTexture(sdf: Float32Array): THREE.DataTexture {
   return tex;
 }
 
+// detail layer: a transparent canvas on top for labels, plus a mask that knocks contour lines out behind them
+const overlay = document.createElement('canvas');
+overlay.id = 'overlay';
+document.body.appendChild(overlay);
+const overlayCtx = overlay.getContext('2d')!;
+const maskCanvas = document.createElement('canvas');
+const maskCtx = maskCanvas.getContext('2d')!;
+const maskTex = new THREE.CanvasTexture(maskCanvas);
+uniforms.uMask.value = maskTex;
+
 function resize(): void {
   renderer.setSize(window.innerWidth, window.innerHeight, false);
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   uniforms.uRes.value.copy(size);
+  maskTex.dispose(); // re-upload at the new size
+  overlay.width = maskCanvas.width = size.x;
+  overlay.height = maskCanvas.height = size.y;
 }
 window.addEventListener('resize', resize);
 resize();
@@ -84,6 +101,8 @@ resize();
 
 const fonts: FontDef[] = [...builtinFonts];
 let loadToken = 0;
+let currentSDF: Float32Array | null = null; // CPU copy, used to keep details clear of the glyph
+let sdfVersion = 0;
 let morphStart = -1;
 const MORPH_SECONDS = 0.9;
 
@@ -94,7 +113,10 @@ async function setGlyph(): Promise<void> {
   await ensureFont(font, text);
   if (token !== loadToken) return;
 
-  const next = makeTexture(renderGlyphSDF(text, font));
+  const sdf = renderGlyphSDF(text, font);
+  currentSDF = sdf;
+  sdfVersion++;
+  const next = makeTexture(sdf);
   const old = uniforms.uFrom.value;
   uniforms.uFrom.value = uniforms.uTo.value; // morph from whatever was showing
   uniforms.uTo.value = next;
@@ -203,6 +225,17 @@ const gLines = gui.addFolder('Contours');
 gLines.add(params, 'spacing', 0.004, 0.06, 0.001).name('interval');
 gLines.add(params, 'lineWidth', 0.3, 4, 0.05).name('line width');
 
+const gDetail = gui.addFolder('Detail layer (animation off)');
+gDetail.add(params, 'details').name('show when paused');
+gDetail.add(params, 'showLabels').name('elevation labels');
+gDetail.add(params, 'showSpots').name('spot heights');
+gDetail.add(params, 'showNotes').name('annotations');
+gDetail.add(params, 'labelStep', 10, 500, 1).name('metres per line');
+gDetail.add(params, 'labelBase', 0, 3000, 1).name('base elevation (m)');
+gDetail.add(params, 'labelSize', 6, 16, 0.5).name('label size');
+gDetail.add(params, 'words').name('words');
+gDetail.add(params, 'caption').name('caption');
+
 const gStyle = gui.addFolder('Style');
 gStyle.add(params, 'palette', paletteNames).onChange(applyPalette);
 gStyle.add(params, 'tint', 0, 1, 0.01).name('elevation tint');
@@ -223,7 +256,14 @@ const actions = {
   },
   savePNG() {
     renderer.render(scene, camera);
-    canvas.toBlob((blob) => {
+    // composite the detail layer (if showing) onto a copy of the WebGL frame
+    const out = document.createElement('canvas');
+    out.width = canvas.width;
+    out.height = canvas.height;
+    const octx = out.getContext('2d')!;
+    octx.drawImage(canvas, 0, 0);
+    if (overlay.style.opacity === '1') octx.drawImage(overlay, 0, 0);
+    out.toBlob((blob) => {
       if (!blob) return;
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -243,7 +283,7 @@ const actions = {
     );
   },
 };
-gui.add(params, 'animate').name('animate terrain');
+gui.add(params, 'animate').name('animate (off = details)');
 gui.add(actions, 'randomize').name('randomize (space)');
 gui.add(actions, 'uploadFont').name('upload font…');
 gui.add(actions, 'savePNG').name('save PNG');
@@ -278,6 +318,124 @@ window.addEventListener('keydown', (e) => {
   setGlyph();
 });
 
+// ---------------------------------------------------------------- detail layer (shown when paused)
+
+const fieldSupported = renderer.extensions.has('EXT_color_buffer_float');
+if (!fieldSupported) console.warn('EXT_color_buffer_float missing: detail layer disabled');
+let fieldTarget: THREE.WebGLRenderTarget | null = null;
+let shownKey = '';
+let pendingKey = '';
+let dueAt = 0;
+let computing = false;
+
+/** Distance from a canvas pixel to the glyph edge, in canvas pixels (negative inside). */
+function glyphDistPx(cx: number, cy: number, W: number, H: number): number {
+  if (!currentSDF) return 1e9;
+  const n = SDF_SIZE;
+  const m = Math.min(W, H);
+  const u = (cx - W / 2) / m / params.size + 0.5;
+  const v = (H / 2 - cy) / m / params.size + 0.5;
+  const cu = Math.min(Math.max(u, 0), 1);
+  const cv = Math.min(Math.max(v, 0), 1);
+  const col = Math.min(n - 1, Math.floor(cu * n));
+  const row = Math.min(n - 1, Math.floor((1 - cv) * n));
+  return (currentSDF[row * n + col] + Math.hypot(u - cu, v - cv)) * params.size * m;
+}
+
+function hideDetails(): void {
+  overlay.style.opacity = '0';
+  uniforms.uMaskOn.value = 0;
+  shownKey = '';
+}
+
+function detailKey(): string {
+  const size = uniforms.uRes.value;
+  return `${JSON.stringify({ ...params, animate: false })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
+}
+
+async function computeDetails(key: string): Promise<void> {
+  if (computing) return;
+  computing = true;
+  try {
+    await Promise.all(
+      ['400', '700'].map((w) => document.fonts.load(`${w} 12px "JetBrains Mono"`).catch(() => [])),
+    );
+    if (key !== detailKey()) return; // settings changed while fonts loaded
+
+    // read the height field back from the GPU, at a capped resolution
+    const W = overlay.width;
+    const H = overlay.height;
+    const k = Math.min(1, 1100 / Math.max(W, H));
+    const gw = Math.round(W * k);
+    const gh = Math.round(H * k);
+    if (!fieldTarget || fieldTarget.width !== gw || fieldTarget.height !== gh) {
+      fieldTarget?.dispose();
+      fieldTarget = new THREE.WebGLRenderTarget(gw, gh, {
+        type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false,
+        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      });
+    }
+    syncUniforms();
+    const prevRes = uniforms.uRes.value.clone();
+    uniforms.uRes.value.set(gw, gh);
+    uniforms.uOutputH.value = 1;
+    renderer.setRenderTarget(fieldTarget);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    uniforms.uOutputH.value = 0;
+    uniforms.uRes.value.copy(prevRes);
+    const buf = new Float32Array(gw * gh * 4);
+    renderer.readRenderTargetPixels(fieldTarget, 0, 0, gw, gh, buf);
+    const field = new Float32Array(gw * gh);
+    for (let i = 0; i < field.length; i++) field[i] = buf[i * 4];
+
+    renderDetails(
+      { field, gw, gh, W, H, glyphDist: (x, y) => glyphDistPx(x, y, W, H) },
+      {
+        labels: params.showLabels,
+        spots: params.showSpots,
+        notes: params.showNotes,
+        avoidGlyph: params.fill > 0.3,
+        spacing: params.spacing,
+        metersPerLine: params.labelStep,
+        baseElevation: params.labelBase,
+        labelSize: params.labelSize,
+        words: params.words.split(',').map((w) => w.trim()).filter(Boolean),
+        caption: params.caption,
+        seed: params.seed,
+        textColor: palettes[params.palette].index,
+      },
+      overlayCtx,
+      maskCtx,
+    );
+    maskTex.needsUpdate = true;
+    uniforms.uMaskOn.value = 1;
+    overlay.style.opacity = '1';
+    shownKey = key;
+  } finally {
+    computing = false;
+  }
+}
+
+function updateDetails(): void {
+  const want = fieldSupported && !params.animate && params.details && morphStart < 0;
+  if (!want) {
+    if (shownKey || pendingKey) hideDetails();
+    pendingKey = '';
+    return;
+  }
+  const key = detailKey();
+  if (key === shownKey) return;
+  if (key !== pendingKey) {
+    // settings just changed: hide stale labels and wait for things to settle
+    pendingKey = key;
+    dueAt = performance.now() + 150;
+    hideDetails();
+    return;
+  }
+  if (performance.now() >= dueAt) void computeDetails(key);
+}
+
 // ---------------------------------------------------------------- loop
 
 const clock = new THREE.Clock();
@@ -296,6 +454,7 @@ function frame(): void {
 
   syncUniforms();
   renderer.render(scene, camera);
+  updateDetails();
   requestAnimationFrame(frame);
 }
 

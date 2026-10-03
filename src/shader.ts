@@ -29,6 +29,9 @@ uniform float uTint;
 uniform float uShade;
 uniform float uGrain;
 uniform float uFill;
+uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
+uniform float uMaskOn;
+uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
 
 uniform vec3 uPaper;
 uniform vec3 uInk;
@@ -132,6 +135,10 @@ void main() {
   float g = uMode == 0 ? abs(d) : (uMode == 1 ? -d : d);
   float amp = mix(1.0, uWobble, w);
   float H = terrain(q) * uRough * amp + g * uSlope * w;
+  if (uOutputH > 0.5) {
+    gl_FragColor = vec4(H, 0.0, 0.0, 1.0);
+    return;
+  }
 
   float v = H / uSpacing;
   float fw = fwidth(v);
@@ -158,6 +165,9 @@ void main() {
   // contours
   float minor = lineMask(dist, fw, uLineW);
   float major = lineMask(dist, fw, uLineW * 2.2);
+  float knock = uMaskOn > 0.5 ? 1.0 - texture(uMask, gl_FragCoord.xy / uRes).r : 1.0;
+  minor *= knock;
+  major *= knock;
   col = mix(col, uInk, minor * (1.0 - isIndex) * 0.9);
   col = mix(col, uIndex, major * isIndex);
 

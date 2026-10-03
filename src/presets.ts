@@ -19,6 +19,16 @@ export interface Params {
   grain: number;
   fill: number;
   animate: boolean;
+  // static detail layer (shown when animation is off)
+  details: boolean;
+  showLabels: boolean;
+  showSpots: boolean;
+  showNotes: boolean;
+  labelStep: number; // metres per contour line
+  labelBase: number; // metres at height 0
+  labelSize: number;
+  words: string;
+  caption: string;
 }
 
 export const defaultParams: Params = {
@@ -42,6 +52,15 @@ export const defaultParams: Params = {
   grain: 0.035,
   fill: 0.0,
   animate: true,
+  details: true,
+  showLabels: true,
+  showSpots: true,
+  showNotes: true,
+  labelStep: 111,
+  labelBase: 500,
+  labelSize: 9,
+  words: 'CONTOUR, TERRAIN, ELEVATION, TOPOGRAPHY',
+  caption: 'ABSTRACT CONTOUR LINES DEFINE THE RHYTHMIC STRUCTURE OF A TOPOGRAPHICAL',
 };
 
 // A preset only lists what differs from the defaults. To add one: tweak the panel, press
