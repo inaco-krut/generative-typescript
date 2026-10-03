@@ -19,6 +19,7 @@ Other scripts: `npm run typecheck`, `npm run build`, `npm run build:single` (one
 - **Letter acts as**: `Offset lines` (contours parallel the outline), `Mountain` (letter is high ground), `Basin`.
 - **upload font…** loads your own TTF/OTF/WOFF. **save PNG** exports the current frame.
 - **Static detail layer:** untick **animate** and the map gains elevation labels (`1444m`) that follow the contour lines, spot heights at peaks, and a small cluster of words, icons and a caption. It is hidden while animating and is included in **save PNG**. Tune it under *Detail layer*.
+- **Multiple glyphs:** *add glyph* in the Glyphs section (up to 8). Click a glyph to select it, drag to move, drag a corner handle or use the wheel to scale, arrow keys to nudge, Delete to remove. Typing changes the text of the glyph being edited. Glyphs share one landscape, so their contours merge.
 - `window.__params` exposes all parameters in the devtools console for quick experiments.
 
 ## How it works

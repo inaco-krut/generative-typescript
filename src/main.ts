@@ -2,16 +2,26 @@ import * as THREE from 'three';
 import GUI from 'lil-gui';
 import { fragmentShader, postFragmentShader, vertexShader } from './shader';
 import { SDF_SIZE, renderGlyphSDF } from './glyph';
+import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
 import { renderDetails } from './details';
 import {
-  builtinPresetNames, defaultParams, loadUserPresets, presets, storeUserPresets, type Params,
+  builtinPresetNames, defaultGlyph, loadUserPresets, presets, resolvePreset, storeUserPresets, type Params,
 } from './presets';
 
 const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
 
-const params: Params = { ...defaultParams, ...presets['R&D Mountain'] };
+const params: Params = resolvePreset(presets['R&D Mountain']);
+const store = new GlyphStore();
+// per-glyph animation state; these arrays are shared with the shader uniforms
+const gPos = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector2());
+const gSize: number[] = new Array(MAX_GLYPHS).fill(1);
+const gMorph: number[] = new Array(MAX_GLYPHS).fill(1);
+const morphStart: number[] = new Array(MAX_GLYPHS).fill(-1);
+const loadTokens: number[] = new Array(MAX_GLYPHS).fill(0);
+let activeIdx = 0; // glyph the panel edits
+let selectedIdx = -1; // glyph with the selection box (-1 = none)
 
 // ---------------------------------------------------------------- renderer
 
@@ -22,18 +32,18 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-const blank = makeTexture(new Float32Array(SDF_SIZE * SDF_SIZE).fill(1));
 const color = (hex: string) => new THREE.Color(hex);
 
 const uniforms = {
   uRes: { value: new THREE.Vector2(1, 1) },
   uTime: { value: 0 },
-  uFrom: { value: blank },
-  uTo: { value: blank },
-  uMorph: { value: 1 },
+  uFromArr: { value: store.fromTex },
+  uToArr: { value: store.toTex },
+  uCount: { value: 0 },
+  uGPos: { value: gPos },
+  uGSize: { value: gSize },
+  uGMorph: { value: gMorph },
   uMode: { value: params.mode },
-  uSize: { value: params.size },
-  uOffset: { value: new THREE.Vector2(params.posX, params.posY) },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
   uWobble: { value: params.wobble },
@@ -63,21 +73,6 @@ const uniforms = {
 const material = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader });
 scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
 
-function makeTexture(sdf: Float32Array): THREE.DataTexture {
-  const n = SDF_SIZE;
-  const half = new Uint16Array(n * n);
-  // canvas rows run top-down, texture rows bottom-up
-  for (let y = 0; y < n; y++) {
-    const src = (n - 1 - y) * n;
-    for (let x = 0; x < n; x++) half[y * n + x] = THREE.DataUtils.toHalfFloat(sdf[src + x]);
-  }
-  const tex = new THREE.DataTexture(half, n, n, THREE.RedFormat, THREE.HalfFloatType);
-  tex.minFilter = tex.magFilter = THREE.LinearFilter;
-  tex.generateMipmaps = false;
-  tex.needsUpdate = true;
-  return tex;
-}
-
 // detail layer: a transparent canvas on top for labels, plus a mask that knocks contour lines out behind them
 const overlay = document.createElement('canvas');
 const overlayCtx = overlay.getContext('2d')!;
@@ -95,11 +90,13 @@ const postUniforms = {
   uOverlay: { value: overlayTex },
   uOverlayOn: { value: 0 },
   uGlass: { value: params.glass },
-  uFrom: uniforms.uFrom,
-  uTo: uniforms.uTo,
-  uMorph: uniforms.uMorph,
-  uSize: uniforms.uSize,
-  uOffset: uniforms.uOffset,
+  uGlassLight: { value: params.glassLight },
+  uFromArr: uniforms.uFromArr,
+  uToArr: uniforms.uToArr,
+  uCount: uniforms.uCount,
+  uGPos: uniforms.uGPos,
+  uGSize: uniforms.uGSize,
+  uGMorph: uniforms.uGMorph,
   uFill: uniforms.uFill,
 };
 const postScene = new THREE.Scene();
@@ -130,52 +127,48 @@ function resize(): void {
 window.addEventListener('resize', resize);
 resize();
 
-// ---------------------------------------------------------------- glyph + morph
+// ---------------------------------------------------------------- glyphs + morph
 
 const fonts: FontDef[] = [...builtinFonts];
-let loadToken = 0;
-let currentSDF: Float32Array | null = null; // CPU copy, used to keep details clear of the glyph
 let sdfVersion = 0;
-let glyphBounds = { u0: 0.25, u1: 0.75, v0: 0.25, v1: 0.75 }; // glyph extent in texture uv (v up)
-let morphStart = -1;
 const MORPH_SECONDS = 0.9;
+const sdfCache = new Map<string, Float32Array>();
 
-function boundsOf(sdf: Float32Array): typeof glyphBounds {
-  const n = SDF_SIZE;
-  let c0 = n, c1 = -1, r0 = n, r1 = -1;
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) {
-      if (sdf[r * n + c] < 0) {
-        if (c < c0) c0 = c;
-        if (c > c1) c1 = c;
-        if (r < r0) r0 = r;
-        if (r > r1) r1 = r;
-      }
-    }
-  }
-  if (c1 < 0) return glyphBounds;
-  return { u0: c0 / n, u1: (c1 + 1) / n, v0: 1 - (r1 + 1) / n, v1: 1 - r0 / n };
-}
-
-async function setGlyph(): Promise<void> {
-  const text = params.text || ' ';
-  const font = fonts.find((f) => f.family === params.font) ?? fonts[0];
-  const token = ++loadToken;
+/** (Re)build glyph `i`'s distance field from its text and font. */
+async function loadGlyph(i: number, morph: boolean): Promise<void> {
+  const g = params.glyphs[i];
+  if (!g) return;
+  const text = g.text || ' ';
+  const font = fonts.find((f) => f.family === g.font) ?? fonts[0];
+  const token = ++loadTokens[i];
   await ensureFont(font, text);
-  if (token !== loadToken) return;
+  if (token !== loadTokens[i] || !params.glyphs[i]) return; // superseded
 
-  const sdf = renderGlyphSDF(text, font);
-  currentSDF = sdf;
-  glyphBounds = boundsOf(sdf);
+  const key = `${font.family}|${text}`;
+  let sdf = sdfCache.get(key);
+  if (!sdf) {
+    sdf = renderGlyphSDF(text, font);
+    sdfCache.set(key, sdf);
+    if (sdfCache.size > 24) sdfCache.delete(sdfCache.keys().next().value as string);
+  }
+  store.set(i, sdf, boundsOf(sdf) ?? { ...defaultBounds }, morph);
   sdfVersion++;
-  const next = makeTexture(sdf);
-  const old = uniforms.uFrom.value;
-  uniforms.uFrom.value = uniforms.uTo.value; // morph from whatever was showing
-  uniforms.uTo.value = next;
-  if (old !== blank && old !== uniforms.uFrom.value) old.dispose();
-  uniforms.uMorph.value = 0;
-  morphStart = performance.now();
+  gMorph[i] = morph ? 0 : 1;
+  morphStart[i] = morph ? performance.now() : -1;
 }
+
+/** Reload every glyph; layers beyond the glyph count are emptied. */
+function rebuildAll(morph: boolean): Promise<void[]> {
+  for (let i = params.glyphs.length; i < MAX_GLYPHS; i++) {
+    loadTokens[i]++;
+    store.clear(i);
+    gMorph[i] = 1;
+    morphStart[i] = -1;
+  }
+  return Promise.all(params.glyphs.map((_, i) => loadGlyph(i, morph)));
+}
+
+const isMorphing = () => morphStart.some((t) => t >= 0);
 
 // ---------------------------------------------------------------- palette / params
 
@@ -198,9 +191,15 @@ function syncFillColor(): void {
 function syncUniforms(): void {
   syncFillColor();
   postUniforms.uGlass.value = params.glass;
+  postUniforms.uGlassLight.value = params.glassLight;
   uniforms.uMode.value = params.mode;
-  uniforms.uSize.value = params.size;
-  uniforms.uOffset.value.set(params.posX, params.posY);
+  const n = Math.min(params.glyphs.length, MAX_GLYPHS);
+  uniforms.uCount.value = n;
+  for (let i = 0; i < n; i++) {
+    const g = params.glyphs[i];
+    gPos[i].set(g.posX, g.posY);
+    gSize[i] = g.size;
+  }
   uniforms.uInfluence.value = params.influence;
   uniforms.uSlope.value = params.slope;
   uniforms.uWobble.value = params.wobble;
@@ -221,20 +220,35 @@ function syncUniforms(): void {
 
 (window as unknown as { __params: typeof params }).__params = params; // handy for scripted tests
 const gui = new GUI({ title: 'Typographic Topography' });
-const refreshGui = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
+const glyphPick = { glyph: 0 };
+// lil-gui swallows key presses while one of its buttons has focus, which would block typing and shortcuts
+gui.domElement.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest('button');
+  if (btn) (btn as HTMLElement).blur();
+});
+const refreshGui = () => {
+  glyphPick.glyph = activeIdx;
+  gui.controllersRecursive().forEach((c) => c.updateDisplay());
+};
+const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(Math.max(v, lo), hi) * 1000) / 1000;
 
 const userPresets = loadUserPresets();
 const allPresetNames = () => [...builtinPresetNames, ...Object.keys(userPresets).filter((n) => !(n in presets))];
 const presetState = { preset: 'R&D Mountain', name: '' };
 
 function applyPreset(name: string): void {
-  Object.assign(params, defaultParams, presets[name] ?? userPresets[name]);
-  if (!fonts.some((f) => f.family === params.font)) params.font = defaultParams.font; // e.g. an uploaded font from another session
+  Object.assign(params, resolvePreset(presets[name] ?? userPresets[name]));
+  // e.g. an uploaded font from another session is gone: fall back to the default font
+  for (const g of params.glyphs) if (!fonts.some((f) => f.family === g.font)) g.font = defaultGlyph.font;
+  params.glyphs = params.glyphs.slice(0, MAX_GLYPHS);
+  activeIdx = 0;
+  selectedIdx = -1;
   applyPalette();
-  gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  refreshGlyphPicker();
+  refreshGui();
   fillCtl.disable(params.textAuto);
   letterColorCtl.disable(params.fillAuto);
-  setGlyph();
+  void rebuildAll(true);
 }
 const presetCtl = gui.add(presetState, 'preset', allPresetNames()).name('preset').onChange(applyPreset);
 const nameCtl = gui.add(presetState, 'name').name('save as…');
@@ -247,7 +261,7 @@ const presetActions = {
       return;
     }
     if (name in presets) name += ' (mine)'; // built-ins stay untouched
-    userPresets[name] = { ...params };
+    userPresets[name] = structuredClone(params);
     const stored = storeUserPresets(userPresets);
     presetCtl.options(allPresetNames());
     presetState.preset = name;
@@ -268,25 +282,89 @@ const presetActions = {
 gui.add(presetActions, 'save').name('save preset');
 gui.add(presetActions, 'remove').name('delete selected preset');
 
-const gGlyph = gui.addFolder('Glyph');
-gGlyph.add(params, 'text').name('character(s)').onFinishChange(setGlyph);
-const fontCtl = gGlyph.add(params, 'font', fonts.map((f) => f.family)).onChange(setGlyph);
-gGlyph.add(params, 'mode', MODES).name('letter acts as');
-gGlyph.add(params, 'size', 0.2, 4, 0.01).name('glyph size');
-gGlyph.add(params, 'posX', -1, 1, 0.001).name('position x');
-gGlyph.add(params, 'posY', -1, 1, 0.001).name('position y');
-gGlyph.add(
-  {
-    reset() {
-      const base = presets[presetState.preset] ?? userPresets[presetState.preset] ?? {};
-      params.posX = 0;
-      params.posY = 0;
-      params.size = base.size ?? defaultParams.size;
-      refreshGui();
-    },
+// The panel edits one glyph at a time (the active one); these accessors forward to it.
+const activeGlyph = () => params.glyphs[activeIdx] ?? params.glyphs[0];
+const active = {
+  get text() { return activeGlyph().text; },
+  set text(v: string) { activeGlyph().text = v; },
+  get font() { return activeGlyph().font; },
+  set font(v: string) { activeGlyph().font = v; },
+  get size() { return activeGlyph().size; },
+  set size(v: number) { activeGlyph().size = v; },
+  get posX() { return activeGlyph().posX; },
+  set posX(v: number) { activeGlyph().posX = v; },
+  get posY() { return activeGlyph().posY; },
+  set posY(v: number) { activeGlyph().posY = v; },
+};
+
+const glyphLabel = (i: number) => {
+  const t = params.glyphs[i].text.trim() || '·';
+  return `${i + 1}: ${t.length > 12 ? t.slice(0, 11) + '…' : t}`;
+};
+function refreshGlyphPicker(): void {
+  const opts: Record<string, number> = {};
+  params.glyphs.forEach((_, i) => (opts[glyphLabel(i)] = i));
+  glyphPickCtl.options(opts);
+  refreshGui();
+}
+
+const glyphActions = {
+  add() {
+    if (params.glyphs.length >= MAX_GLYPHS) return;
+    const base = activeGlyph();
+    params.glyphs.push({
+      ...base,
+      text: String.fromCharCode(65 + (params.glyphs.length % 26)),
+      size: clamp(base.size * 0.6, 0.2, 4),
+      posX: clamp(base.posX + 0.3, -1.2, 1.2),
+      posY: clamp(base.posY - 0.25, -1.2, 1.2),
+    });
+    activeIdx = selectedIdx = params.glyphs.length - 1;
+    void loadGlyph(activeIdx, false);
+    refreshGlyphPicker();
   },
-  'reset',
-).name('reset position & size');
+  remove() {
+    if (params.glyphs.length <= 1) return; // keep at least one glyph
+    params.glyphs.splice(activeIdx, 1);
+    activeIdx = Math.min(activeIdx, params.glyphs.length - 1);
+    selectedIdx = -1;
+    void rebuildAll(false);
+    refreshGlyphPicker();
+  },
+  reset() {
+    const g = activeGlyph();
+    const base = (resolvePreset(presets[presetState.preset] ?? userPresets[presetState.preset] ?? {})).glyphs[activeIdx];
+    g.posX = 0;
+    g.posY = 0;
+    g.size = base?.size ?? defaultGlyph.size;
+    refreshGui();
+  },
+};
+
+const gGlyph = gui.addFolder('Glyphs');
+const glyphPickCtl = gGlyph
+  .add(glyphPick, 'glyph', { '1: R&D': 0 })
+  .name('editing')
+  .onChange((i: number) => {
+    activeIdx = i;
+    selectedIdx = i;
+    refreshGui();
+  });
+gGlyph.add(glyphActions, 'add').name('add glyph');
+gGlyph.add(glyphActions, 'remove').name('delete this glyph');
+gGlyph
+  .add(active, 'text')
+  .name('character(s)')
+  .onFinishChange(() => {
+    void loadGlyph(activeIdx, true);
+    refreshGlyphPicker();
+  });
+const fontCtl = gGlyph.add(active, 'font', fonts.map((f) => f.family)).onChange(() => void loadGlyph(activeIdx, true));
+gGlyph.add(active, 'size', 0.2, 4, 0.01).name('glyph size');
+gGlyph.add(active, 'posX', -1.5, 1.5, 0.001).name('position x');
+gGlyph.add(active, 'posY', -1.5, 1.5, 0.001).name('position y');
+gGlyph.add(glyphActions, 'reset').name('reset position & size');
+gGlyph.add(params, 'mode', MODES).name('letters act as');
 gGlyph.add(params, 'influence', 0.02, 0.8, 0.01).name('influence radius');
 gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
@@ -322,6 +400,7 @@ gStyle.add(params, 'tint', 0, 1, 0.01).name('elevation tint');
 gStyle.add(params, 'shade', 0, 1, 0.01).name('hillshade');
 gStyle.add(params, 'grain', 0, 0.2, 0.001).name('paper grain');
 gStyle.add(params, 'glass', 0, 1, 0.01).name('glass overlay');
+gStyle.add(params, 'glassLight', 0, 1, 0.01).name('glass light streak');
 gStyle.add(params, 'fill', 0, 1, 0.01).name('letter fill');
 const letterColorCtl = gStyle.addColor(params, 'fillColor').name('letter fill colour');
 gStyle.add(params, 'fillAuto').name('letter fill from palette').onChange((auto: boolean) => letterColorCtl.disable(auto));
@@ -336,7 +415,7 @@ const actions = {
     params.spacing = 0.01 + Math.random() * 0.025;
     params.palette = paletteNames[Math.floor(Math.random() * paletteNames.length)];
     applyPalette();
-    gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    refreshGui();
   },
   savePNG() {
     renderFrame();
@@ -344,7 +423,7 @@ const actions = {
       if (!blob) return;
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `topography-${params.text || 'glyph'}.png`;
+      a.download = `topography-${params.glyphs[0]?.text || 'glyph'}.png`;
       a.click();
       URL.revokeObjectURL(a.href);
     });
@@ -373,13 +452,13 @@ fileInput.addEventListener('change', async () => {
   const def = await loadFontFile(file, fonts.length);
   fonts.push(def);
   fontCtl.options(fonts.map((f) => f.family));
-  params.font = def.family;
-  fontCtl.updateDisplay();
+  activeGlyph().font = def.family;
+  refreshGui();
   fileInput.value = '';
-  setGlyph();
+  void loadGlyph(activeIdx, true);
 });
 
-// type a character anywhere (outside the panel's inputs) to swap the glyph
+// type a character anywhere (outside the panel's inputs) to swap the active glyph's text
 window.addEventListener('keydown', (e) => {
   const t = e.target as HTMLElement;
   if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
@@ -387,12 +466,12 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault();
   if (e.key === ' ') {
     params.seed = Math.random() * 10;
-    gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    refreshGui();
     return;
   }
-  params.text = e.key;
-  gui.controllersRecursive().forEach((c) => c.updateDisplay());
-  setGlyph();
+  activeGlyph().text = e.key;
+  void loadGlyph(activeIdx, true);
+  refreshGlyphPicker();
 });
 
 // ---------------------------------------------------------------- detail layer (shown when paused)
@@ -405,19 +484,26 @@ let pendingKey = '';
 let dueAt = 0;
 let computing = false;
 
-/** Distance from a canvas pixel to the glyph edge, in canvas pixels (negative inside). */
+/** Distance from a canvas pixel to the nearest glyph edge, in canvas pixels (negative inside). */
 function glyphDistPx(cx: number, cy: number, W: number, H: number): number {
-  if (!currentSDF) return 1e9;
   const n = SDF_SIZE;
   const m = Math.min(W, H);
-  const u = ((cx - W / 2) / m - params.posX) / params.size + 0.5;
-  const v = ((H / 2 - cy) / m - params.posY) / params.size + 0.5;
-  const cu = Math.min(Math.max(u, 0), 1);
-  const cv = Math.min(Math.max(v, 0), 1);
-  const col = Math.min(n - 1, Math.floor(cu * n));
-  const row = Math.min(n - 1, Math.floor((1 - cv) * n));
-  return (currentSDF[row * n + col] + Math.hypot(u - cu, v - cv)) * params.size * m;
+  let best = 1e9;
+  params.glyphs.forEach((g, i) => {
+    const sdf = store.sdf[i];
+    if (!sdf) return;
+    const u = ((cx - W / 2) / m - g.posX) / g.size + 0.5;
+    const v = ((H / 2 - cy) / m - g.posY) / g.size + 0.5;
+    const cu = Math.min(Math.max(u, 0), 1);
+    const cv = Math.min(Math.max(v, 0), 1);
+    const col = Math.min(n - 1, Math.floor(cu * n));
+    const row = Math.min(n - 1, Math.floor((1 - cv) * n));
+    best = Math.min(best, (sdf[row * n + col] + Math.hypot(u - cu, v - cv)) * g.size * m);
+  });
+  return best;
 }
+
+const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(xs.length, 1);
 
 function hideDetails(): void {
   postUniforms.uOverlayOn.value = 0;
@@ -469,8 +555,8 @@ async function computeDetails(key: string): Promise<void> {
     renderDetails(
       {
         field, gw, gh, W, H,
-        cx: W / 2 + params.posX * Math.min(W, H),
-        cy: H / 2 - params.posY * Math.min(W, H),
+        cx: W / 2 + mean(params.glyphs.map((g) => g.posX)) * Math.min(W, H),
+        cy: H / 2 - mean(params.glyphs.map((g) => g.posY)) * Math.min(W, H),
         glyphDist: (x, y) => glyphDistPx(x, y, W, H) },
       {
         labels: params.showLabels,
@@ -500,7 +586,7 @@ async function computeDetails(key: string): Promise<void> {
 }
 
 function updateDetails(): void {
-  const want = fieldSupported && !params.animate && params.details && morphStart < 0;
+  const want = fieldSupported && !params.animate && params.details && !isMorphing();
   if (!want) {
     if (shownKey || pendingKey) hideDetails();
     pendingKey = '';
@@ -518,7 +604,7 @@ function updateDetails(): void {
   if (performance.now() >= dueAt) void computeDetails(key);
 }
 
-// ---------------------------------------------------------------- select / move / scale the glyph
+// ---------------------------------------------------------------- select / move / scale glyphs
 
 const selBox = document.createElement('div');
 selBox.id = 'selection';
@@ -530,65 +616,79 @@ for (const corner of ['nw', 'ne', 'sw', 'se'] as const) {
 }
 document.body.appendChild(selBox);
 
-let selected = false;
 type Drag =
-  | { kind: 'move'; sx: number; sy: number; px: number; py: number }
-  | { kind: 'scale'; cx: number; cy: number; d0: number; size0: number };
+  | { kind: 'move'; idx: number; sx: number; sy: number; px: number; py: number }
+  | { kind: 'scale'; idx: number; cx: number; cy: number; d0: number; size0: number };
 let drag: Drag | null = null;
 const SEL_PAD = 8;
 
-/** Glyph centre and bounding box in CSS px. */
-function glyphBox() {
+/** Glyph `i`'s centre and bounding box in CSS px. */
+function glyphBox(i: number) {
+  const g = params.glyphs[i];
   const m = Math.min(window.innerWidth, window.innerHeight);
-  const cx = window.innerWidth / 2 + params.posX * m;
-  const cy = window.innerHeight / 2 - params.posY * m;
-  const b = glyphBounds;
+  const cx = window.innerWidth / 2 + g.posX * m;
+  const cy = window.innerHeight / 2 - g.posY * m;
+  const b = store.bounds[i];
   return {
     m, cx, cy,
-    x0: cx + (b.u0 - 0.5) * params.size * m,
-    x1: cx + (b.u1 - 0.5) * params.size * m,
-    y0: cy - (b.v1 - 0.5) * params.size * m,
-    y1: cy - (b.v0 - 0.5) * params.size * m,
+    x0: cx + (b.u0 - 0.5) * g.size * m,
+    x1: cx + (b.u1 - 0.5) * g.size * m,
+    y0: cy - (b.v1 - 0.5) * g.size * m,
+    y1: cy - (b.v0 - 0.5) * g.size * m,
   };
 }
 
-function hitGlyph(x: number, y: number): boolean {
-  const g = glyphBox();
-  return x >= g.x0 - SEL_PAD && x <= g.x1 + SEL_PAD && y >= g.y0 - SEL_PAD && y <= g.y1 + SEL_PAD;
+/** Topmost glyph under a point, or -1. */
+function hitGlyph(x: number, y: number): number {
+  for (let i = params.glyphs.length - 1; i >= 0; i--) {
+    const g = glyphBox(i);
+    if (x >= g.x0 - SEL_PAD && x <= g.x1 + SEL_PAD && y >= g.y0 - SEL_PAD && y <= g.y1 + SEL_PAD) return i;
+  }
+  return -1;
 }
 
 function beginScale(e: PointerEvent): void {
+  if (selectedIdx < 0) return;
   e.preventDefault();
   e.stopPropagation();
-  const g = glyphBox();
-  drag = { kind: 'scale', cx: g.cx, cy: g.cy, d0: Math.max(10, Math.hypot(e.clientX - g.cx, e.clientY - g.cy)), size0: params.size };
+  const g = glyphBox(selectedIdx);
+  drag = {
+    kind: 'scale', idx: selectedIdx, cx: g.cx, cy: g.cy,
+    d0: Math.max(10, Math.hypot(e.clientX - g.cx, e.clientY - g.cy)), size0: params.glyphs[selectedIdx].size,
+  };
 }
-
-const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(Math.max(v, lo), hi) * 1000) / 1000;
 
 canvas.style.touchAction = 'none';
 canvas.addEventListener('pointerdown', (e) => {
-  if (hitGlyph(e.clientX, e.clientY)) {
-    selected = true;
-    drag = { kind: 'move', sx: e.clientX, sy: e.clientY, px: params.posX, py: params.posY };
+  (document.activeElement as HTMLElement | null)?.blur?.();
+  const hit = hitGlyph(e.clientX, e.clientY);
+  if (hit >= 0) {
+    selectedIdx = hit;
+    activeIdx = hit;
+    const g = params.glyphs[hit];
+    drag = { kind: 'move', idx: hit, sx: e.clientX, sy: e.clientY, px: g.posX, py: g.posY };
+    refreshGui();
     e.preventDefault();
   } else {
-    selected = false;
+    selectedIdx = -1;
   }
 });
 canvas.addEventListener('pointermove', (e) => {
   if (drag) return;
-  canvas.style.cursor = hitGlyph(e.clientX, e.clientY) ? (selected ? 'move' : 'pointer') : 'default';
+  const hit = hitGlyph(e.clientX, e.clientY);
+  canvas.style.cursor = hit < 0 ? 'default' : hit === selectedIdx ? 'move' : 'pointer';
 });
 window.addEventListener('pointermove', (e) => {
   if (!drag) return;
+  const g = params.glyphs[drag.idx];
+  if (!g) return;
   if (drag.kind === 'move') {
     const m = Math.min(window.innerWidth, window.innerHeight);
-    params.posX = clamp(drag.px + (e.clientX - drag.sx) / m, -1.5, 1.5);
-    params.posY = clamp(drag.py - (e.clientY - drag.sy) / m, -1.5, 1.5);
+    g.posX = clamp(drag.px + (e.clientX - drag.sx) / m, -1.5, 1.5);
+    g.posY = clamp(drag.py - (e.clientY - drag.sy) / m, -1.5, 1.5);
   } else {
     const d = Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy);
-    params.size = clamp(drag.size0 * (d / drag.d0), 0.2, 4);
+    g.size = clamp(drag.size0 * (d / drag.d0), 0.2, 4);
   }
   refreshGui();
 });
@@ -596,34 +696,40 @@ window.addEventListener('pointerup', () => { drag = null; });
 canvas.addEventListener(
   'wheel',
   (e) => {
-    if (!selected) return;
+    if (selectedIdx < 0) return;
     e.preventDefault();
-    params.size = clamp(params.size * Math.exp(-e.deltaY * 0.0015), 0.2, 4);
+    const g = params.glyphs[selectedIdx];
+    g.size = clamp(g.size * Math.exp(-e.deltaY * 0.0015), 0.2, 4);
     refreshGui();
   },
   { passive: false },
 );
 window.addEventListener('keydown', (e) => {
   const t = e.target as HTMLElement;
-  if (!selected || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
-  const step = (e.shiftKey ? 0.02 : 0.004);
+  if (selectedIdx < 0 || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
+  const step = e.shiftKey ? 0.02 : 0.004;
   const moves: Record<string, [number, number]> = {
     ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step],
   };
   if (e.key === 'Escape') {
-    selected = false;
+    selectedIdx = -1;
   } else if (moves[e.key]) {
     e.preventDefault();
-    params.posX = clamp(params.posX + moves[e.key][0], -1.5, 1.5);
-    params.posY = clamp(params.posY + moves[e.key][1], -1.5, 1.5);
+    const g = params.glyphs[selectedIdx];
+    g.posX = clamp(g.posX + moves[e.key][0], -1.5, 1.5);
+    g.posY = clamp(g.posY + moves[e.key][1], -1.5, 1.5);
     refreshGui();
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    glyphActions.remove();
   }
 });
 
 function updateSelectionUI(): void {
-  selBox.style.display = selected ? 'block' : 'none';
-  if (!selected) return;
-  const g = glyphBox();
+  const ok = selectedIdx >= 0 && selectedIdx < params.glyphs.length;
+  selBox.style.display = ok ? 'block' : 'none';
+  if (!ok) return;
+  const g = glyphBox(selectedIdx);
   selBox.style.left = `${g.x0 - SEL_PAD}px`;
   selBox.style.top = `${g.y0 - SEL_PAD}px`;
   selBox.style.width = `${g.x1 - g.x0 + SEL_PAD * 2}px`;
@@ -640,10 +746,11 @@ function frame(): void {
   if (params.animate) time += dt;
   uniforms.uTime.value = time;
 
-  if (morphStart >= 0) {
-    const t = Math.min((performance.now() - morphStart) / (MORPH_SECONDS * 1000), 1);
-    uniforms.uMorph.value = t * t * (3 - 2 * t); // smoothstep ease
-    if (t >= 1) morphStart = -1;
+  for (let i = 0; i < MAX_GLYPHS; i++) {
+    if (morphStart[i] < 0) continue;
+    const t = Math.min((performance.now() - morphStart[i]) / (MORPH_SECONDS * 1000), 1);
+    gMorph[i] = t * t * (3 - 2 * t); // smoothstep ease
+    if (t >= 1) morphStart[i] = -1;
   }
 
   syncUniforms();
@@ -654,10 +761,6 @@ function frame(): void {
 }
 
 applyPalette();
-setGlyph().then(() => {
-  // first glyph shows immediately rather than morphing from nothing
-  uniforms.uFrom.value = uniforms.uTo.value;
-  uniforms.uMorph.value = 1;
-  morphStart = -1;
-});
+refreshGlyphPicker();
+void rebuildAll(false); // first glyphs appear immediately rather than morphing from nothing
 requestAnimationFrame(frame);

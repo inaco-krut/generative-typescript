@@ -1,3 +1,31 @@
+const MAX_GLYPHS_GLSL = 8;
+
+// All glyphs combined: distance to the nearest one, in short-side units (positive outside).
+const glyphGLSL = /* glsl */ `
+#define MAXG ${MAX_GLYPHS_GLSL}
+uniform highp sampler2DArray uFromArr;
+uniform highp sampler2DArray uToArr;
+uniform int uCount;
+uniform vec2 uGPos[MAXG];
+uniform float uGSize[MAXG];
+uniform float uGMorph[MAXG];
+
+float glyphDist(vec2 q) {
+  float best = 1e3;
+  for (int i = 0; i < MAXG; i++) {
+    if (i >= uCount) break;
+    float sz = uGSize[i];
+    vec2 uv = (q - uGPos[i]) / sz + 0.5;
+    vec2 c = clamp(uv, 0.0, 1.0);
+    vec3 p = vec3(c, float(i));
+    float d = mix(texture(uFromArr, p).r, texture(uToArr, p).r, uGMorph[i]);
+    d += length(uv - c); // continue the field past the texture border
+    best = min(best, d * sz);
+  }
+  return best;
+}
+`;
+
 export const vertexShader = /* glsl */ `
 void main() {
   gl_Position = vec4(position.xy, 0.0, 1.0);
@@ -9,13 +37,8 @@ precision highp float;
 
 uniform vec2 uRes;
 uniform float uTime;
-uniform sampler2D uFrom;
-uniform sampler2D uTo;
-uniform float uMorph;
-
+${glyphGLSL}
 uniform int uMode;          // 0 offset lines, 1 mountain, 2 basin
-uniform float uSize;        // glyph texture extent, in short-side units
-uniform vec2 uOffset;       // glyph position, in short-side units
 uniform float uInfluence;   // how far the glyph reshapes the land
 uniform float uSlope;       // glyph height gradient
 uniform float uWobble;      // terrain amplitude kept at the glyph edge (0..1)
@@ -108,15 +131,6 @@ float terrain(vec2 q) {
   return fbm(p) * 0.5 + 0.5;
 }
 
-// Signed distance to the glyph in short-side units (positive outside).
-float glyphDist(vec2 q) {
-  vec2 uv = (q - uOffset) / uSize + 0.5;
-  vec2 c = clamp(uv, 0.0, 1.0);
-  float d = mix(texture(uFrom, c).r, texture(uTo, c).r, uMorph);
-  d += length(uv - c); // continue the field past the texture border
-  return d * uSize;
-}
-
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
@@ -189,11 +203,8 @@ uniform sampler2D uScene;
 uniform sampler2D uOverlay;
 uniform float uOverlayOn;
 uniform float uGlass;
-uniform sampler2D uFrom;
-uniform sampler2D uTo;
-uniform float uMorph;
-uniform float uSize;
-uniform vec2 uOffset;
+uniform float uGlassLight; // scales the additive light: sheen, rim and edge line
+${glyphGLSL}
 uniform float uFill;
 
 vec3 sceneAt(vec2 uv) {
@@ -203,14 +214,6 @@ vec3 sceneAt(vec2 uv) {
     c = mix(c, o.rgb, o.a);
   }
   return c;
-}
-
-float glyphDist(vec2 q) {
-  vec2 uv = (q - uOffset) / uSize + 0.5;
-  vec2 c = clamp(uv, 0.0, 1.0);
-  float d = mix(texture(uFrom, c).r, texture(uTo, c).r, uMorph);
-  d += length(uv - c);
-  return d * uSize;
 }
 
 void main() {
@@ -251,7 +254,7 @@ void main() {
   float edge = 1.0 - smoothstep(0.0, 2.5 * uRes.y / 800.0, edgePx);
   col *= mix(vec3(1.0), vec3(0.96, 0.99, 1.03), 0.5 * uGlass);
   col *= 1.0 - rim * 0.12 * uGlass;
-  col += uGlass * (sheen + rim * 0.06 + edge * 0.16);
+  col += uGlass * uGlassLight * (sheen + rim * 0.06 + edge * 0.16);
 
   // keep the main letters out of the glass
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
