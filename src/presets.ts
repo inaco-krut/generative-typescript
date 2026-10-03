@@ -27,6 +27,8 @@ export interface Params {
   labelStep: number; // metres per contour line
   labelBase: number; // metres at height 0
   labelSize: number;
+  textAuto: boolean; // true: text follows the palette's index colour
+  textFill: string; // custom text colour, used when textAuto is off
   words: string;
   caption: string;
 }
@@ -59,6 +61,8 @@ export const defaultParams: Params = {
   labelStep: 111,
   labelBase: 500,
   labelSize: 9,
+  textAuto: true,
+  textFill: '#ffffff',
   words: 'RIDGE, BASIN, SUMMIT, BEARING',
   caption: 'LINES OF EQUAL HEIGHT TRACE THE QUIET SHAPE OF THE LAND BENEATH THE LETTER',
 };

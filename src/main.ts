@@ -171,6 +171,7 @@ function applyPreset(name: string): void {
   if (!fonts.some((f) => f.family === params.font)) params.font = defaultParams.font; // e.g. an uploaded font from another session
   applyPalette();
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  fillCtl.disable(params.textAuto);
   setGlyph();
 }
 const presetCtl = gui.add(presetState, 'preset', allPresetNames()).name('preset').onChange(applyPreset);
@@ -233,6 +234,9 @@ gDetail.add(params, 'showNotes').name('annotations');
 gDetail.add(params, 'labelStep', 10, 500, 1).name('metres per line');
 gDetail.add(params, 'labelBase', 0, 3000, 1).name('base elevation (m)');
 gDetail.add(params, 'labelSize', 6, 16, 0.5).name('label size');
+const fillCtl = gDetail.addColor(params, 'textFill').name('text fill (custom)');
+gDetail.add(params, 'textAuto').name('text fill from palette').onChange((auto: boolean) => fillCtl.disable(auto));
+fillCtl.disable(params.textAuto);
 gDetail.add(params, 'words').name('words');
 gDetail.add(params, 'caption').name('caption');
 
@@ -403,7 +407,7 @@ async function computeDetails(key: string): Promise<void> {
         words: params.words.split(',').map((w) => w.trim()).filter(Boolean),
         caption: params.caption,
         seed: params.seed,
-        textColor: palettes[params.palette].index,
+        textColor: params.textAuto ? palettes[params.palette].index : params.textFill,
       },
       overlayCtx,
       maskCtx,
