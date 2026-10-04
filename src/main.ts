@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
-import { fragmentShader, postFragmentShader, vertexShader } from './shader';
+import {
+  blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, fragmentShader, postFragmentShader, vertexShader,
+} from './shader';
 import { SDF_SIZE, renderGlyphSDF } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
@@ -89,6 +91,8 @@ const postUniforms = {
   uScene: { value: sceneRT.texture },
   uOverlay: { value: overlayTex },
   uOverlayOn: { value: 0 },
+  uBlurTex: { value: null as THREE.Texture | null },
+  uBlur: { value: params.blur },
   uGlass: { value: params.glass },
   uGlassLight: { value: params.glassLight },
   uFromArr: uniforms.uFromArr,
@@ -107,9 +111,85 @@ postScene.add(
   ),
 );
 
+// background blur: map + detail layer -> half res (glyph areas masked out) -> quarter res -> gaussian
+const floatRT = renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float');
+const makeBlurRT = () =>
+  new THREE.WebGLRenderTarget(1, 1, {
+    type: floatRT ? THREE.HalfFloatType : THREE.UnsignedByteType,
+    depthBuffer: false,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+  });
+const blurHalf = makeBlurRT();
+const blurQuarter = makeBlurRT();
+const blurTemp = makeBlurRT();
+postUniforms.uBlurTex.value = blurQuarter.texture;
+
+const fxMaterials = {
+  down: new THREE.ShaderMaterial({
+    uniforms: {
+      uRes: uniforms.uRes,
+      uOutRes: { value: new THREE.Vector2() },
+      uScene: { value: sceneRT.texture },
+      uOverlay: { value: overlayTex },
+      uOverlayOn: postUniforms.uOverlayOn,
+      uFromArr: uniforms.uFromArr,
+      uToArr: uniforms.uToArr,
+      uCount: uniforms.uCount,
+      uGPos: uniforms.uGPos,
+      uGSize: uniforms.uGSize,
+      uGMorph: uniforms.uGMorph,
+    },
+    vertexShader,
+    fragmentShader: blurDownFragmentShader,
+  }),
+  box: new THREE.ShaderMaterial({
+    uniforms: { uSrc: { value: blurHalf.texture }, uSrcRes: { value: new THREE.Vector2() }, uOutRes: { value: new THREE.Vector2() } },
+    vertexShader,
+    fragmentShader: blurBoxFragmentShader,
+  }),
+  gauss: new THREE.ShaderMaterial({
+    uniforms: {
+      uSrc: { value: null as THREE.Texture | null },
+      uOutRes: { value: new THREE.Vector2() },
+      uDir: { value: new THREE.Vector2() },
+      uSigma: { value: 1 },
+    },
+    vertexShader,
+    fragmentShader: blurFragmentShader,
+  }),
+};
+const fxMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fxMaterials.down);
+const fxScene = new THREE.Scene();
+fxScene.add(fxMesh);
+
+function fxPass(material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget): void {
+  fxMesh.material = material;
+  const out = material.uniforms.uOutRes.value as THREE.Vector2;
+  out.set(target.width, target.height);
+  renderer.setRenderTarget(target);
+  renderer.render(fxScene, camera);
+}
+
+function runBlur(): void {
+  fxPass(fxMaterials.down, blurHalf);
+  (fxMaterials.box.uniforms.uSrcRes.value as THREE.Vector2).set(blurHalf.width, blurHalf.height);
+  fxPass(fxMaterials.box, blurQuarter);
+  // sigma in quarter-res texels; the slider scales with the canvas height so exports match the screen
+  const sigma = (params.blur * params.blur * 0.035 * uniforms.uRes.value.y) / 4; // quadratic: fine control at the low end
+  fxMaterials.gauss.uniforms.uSigma.value = sigma;
+  fxMaterials.gauss.uniforms.uSrc.value = blurQuarter.texture;
+  (fxMaterials.gauss.uniforms.uDir.value as THREE.Vector2).set(1, 0);
+  fxPass(fxMaterials.gauss, blurTemp);
+  fxMaterials.gauss.uniforms.uSrc.value = blurTemp.texture;
+  (fxMaterials.gauss.uniforms.uDir.value as THREE.Vector2).set(0, 1);
+  fxPass(fxMaterials.gauss, blurQuarter);
+}
+
 function renderFrame(): void {
   renderer.setRenderTarget(sceneRT);
   renderer.render(scene, camera);
+  if (params.blur > 0.001) runBlur();
   renderer.setRenderTarget(null);
   renderer.render(postScene, camera);
 }
@@ -121,6 +201,11 @@ function resize(): void {
   maskTex.dispose(); // re-upload at the new size
   overlayTex.dispose();
   sceneRT.setSize(size.x, size.y);
+  const hw = Math.max(1, Math.ceil(size.x / 2));
+  const hh = Math.max(1, Math.ceil(size.y / 2));
+  blurHalf.setSize(hw, hh);
+  blurQuarter.setSize(Math.max(1, Math.ceil(hw / 2)), Math.max(1, Math.ceil(hh / 2)));
+  blurTemp.setSize(blurQuarter.width, blurQuarter.height);
   overlay.width = maskCanvas.width = size.x;
   overlay.height = maskCanvas.height = size.y;
 }
@@ -192,6 +277,7 @@ function syncUniforms(): void {
   syncFillColor();
   postUniforms.uGlass.value = params.glass;
   postUniforms.uGlassLight.value = params.glassLight;
+  postUniforms.uBlur.value = params.blur;
   uniforms.uMode.value = params.mode;
   const n = Math.min(params.glyphs.length, MAX_GLYPHS);
   uniforms.uCount.value = n;
@@ -401,6 +487,7 @@ gStyle.add(params, 'shade', 0, 1, 0.01).name('hillshade');
 gStyle.add(params, 'grain', 0, 0.2, 0.001).name('paper grain');
 gStyle.add(params, 'glass', 0, 1, 0.01).name('glass overlay');
 gStyle.add(params, 'glassLight', 0, 1, 0.01).name('glass light streak');
+gStyle.add(params, 'blur', 0, 1, 0.01).name('background blur');
 gStyle.add(params, 'fill', 0, 1, 0.01).name('letter fill');
 const letterColorCtl = gStyle.addColor(params, 'fillColor').name('letter fill colour');
 gStyle.add(params, 'fillAuto').name('letter fill from palette').onChange((auto: boolean) => letterColorCtl.disable(auto));
@@ -513,7 +600,7 @@ function hideDetails(): void {
 
 function detailKey(): string {
   const size = uniforms.uRes.value;
-  return `${JSON.stringify({ ...params, animate: false })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
+  return `${JSON.stringify({ ...params, animate: false, glass: 0, glassLight: 0, blur: 0 })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
 }
 
 async function computeDetails(key: string): Promise<void> {

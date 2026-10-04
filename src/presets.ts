@@ -24,6 +24,7 @@ export interface Params {
   shade: number;
   grain: number;
   glass: number; // glass overlay strength, 0 = off
+  blur: number; // background blur (everything except the glyphs), 0 = off
   glassLight: number; // brightness of the glass's light streak, rim and edge light (1 = full)
   fill: number;
   fillAuto: boolean; // true: letter fill uses the palette's index colour
@@ -64,6 +65,7 @@ export const defaultParams: Params = {
   grain: 0.035,
   glass: 0,
   glassLight: 1,
+  blur: 0,
   fill: 0.0,
   fillAuto: true,
   fillColor: '#111111',

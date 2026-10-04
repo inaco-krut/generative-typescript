@@ -202,6 +202,8 @@ uniform vec2 uRes;
 uniform sampler2D uScene;
 uniform sampler2D uOverlay;
 uniform float uOverlayOn;
+uniform sampler2D uBlurTex; // background blurred without the glyph areas (premultiplied)
+uniform float uBlur;
 uniform float uGlass;
 uniform float uGlassLight; // scales the additive light: sheen, rim and edge line
 ${glyphGLSL}
@@ -216,51 +218,144 @@ vec3 sceneAt(vec2 uv) {
   return c;
 }
 
+float blurMix() {
+  return smoothstep(0.0, 0.08, uBlur);
+}
+
+vec3 bgAt(vec2 uv) {
+  vec3 s = sceneAt(uv);
+  if (uBlur > 0.001) {
+    vec4 b = texture(uBlurTex, uv);
+    s = mix(s, b.rgb / max(b.a, 0.02), blurMix());
+  }
+  return s;
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uRes;
-  vec3 plain = sceneAt(uv);
-  if (uGlass < 0.001) {
-    gl_FragColor = vec4(plain, 1.0);
+  vec3 sharp = sceneAt(uv);
+  if (uGlass < 0.001 && uBlur < 0.001) {
+    gl_FragColor = vec4(sharp, 1.0);
     return;
   }
 
-  float aspect = uRes.x / uRes.y;
-  vec2 c = uv - 0.5;
-  vec2 cp = c * vec2(aspect, 1.0);                       // isotropic coordinates
-  float r = length(cp) / length(vec2(aspect, 1.0) * 0.5); // 0 centre .. 1 corners
-  float r2 = r * r;
-
-  // barrel distortion: corners sample slightly inwards, so no empty borders appear
-  vec2 uvd = 0.5 + c * (1.0 - uGlass * 0.06 * r2);
-
-  // chromatic aberration: spectral smear along the radial direction, strongest in the corners
-  vec2 dir = normalize(cp + 1e-5) / vec2(aspect, 1.0);
-  float off = uGlass * 0.016 * pow(r, 2.4);
-  vec3 acc = vec3(0.0);
-  vec3 wsum = vec3(0.0);
-  for (int i = 0; i < 7; i++) {
-    float t = float(i) / 6.0;
-    vec3 w = vec3(smoothstep(0.3, 1.0, t), max(0.0, 1.0 - abs(t - 0.5) * 2.5), smoothstep(0.7, 0.0, t));
-    acc += sceneAt(uvd + dir * off * (t - 0.5) * 2.0) * w;
-    wsum += w;
-  }
-  vec3 col = acc / wsum;
-
-  // glass: soft diagonal sheen, brighter rim towards the corners, thin edge light, faint cool tint
-  float diag = dot(c, normalize(vec2(0.7, 1.0)));
-  float sheen = exp(-pow((diag - 0.12) * 5.5, 2.0)) * 0.09 + exp(-pow((diag + 0.24) * 14.0, 2.0)) * 0.045;
-  float rim = smoothstep(0.55, 1.0, r);
-  float edgePx = min(min(uv.x, 1.0 - uv.x) * uRes.x, min(uv.y, 1.0 - uv.y) * uRes.y);
-  float edge = 1.0 - smoothstep(0.0, 2.5 * uRes.y / 800.0, edgePx);
-  col *= mix(vec3(1.0), vec3(0.96, 0.99, 1.03), 0.5 * uGlass);
-  col *= 1.0 - rim * 0.12 * uGlass;
-  col += uGlass * uGlassLight * (sheen + rim * 0.06 + edge * 0.16);
-
-  // keep the main letters out of the glass
+  // glyph areas stay sharp: always with blur, fading in with the letter fill for the glass alone
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
   float d = glyphDist(q);
   float fd = max(fwidth(d), 1e-6);
-  float excl = (1.0 - smoothstep(-fd, fd, d)) * smoothstep(0.0, 0.25, uFill);
-  gl_FragColor = vec4(mix(col, plain, excl), 1.0);
+  float inside = 1.0 - smoothstep(-fd, fd, d);
+  float excl = inside * mix(smoothstep(0.0, 0.25, uFill), 1.0, blurMix());
+
+  vec3 col;
+  if (uGlass < 0.001) {
+    col = bgAt(uv);
+  } else {
+    float aspect = uRes.x / uRes.y;
+    vec2 c = uv - 0.5;
+    vec2 cp = c * vec2(aspect, 1.0);                       // isotropic coordinates
+    float r = length(cp) / length(vec2(aspect, 1.0) * 0.5); // 0 centre .. 1 corners
+    float r2 = r * r;
+
+    // barrel distortion: corners sample slightly inwards, so no empty borders appear
+    vec2 uvd = 0.5 + c * (1.0 - uGlass * 0.06 * r2);
+
+    // chromatic aberration: spectral smear along the radial direction, strongest in the corners
+    vec2 dir = normalize(cp + 1e-5) / vec2(aspect, 1.0);
+    float off = uGlass * 0.016 * pow(r, 2.4);
+    vec3 acc = vec3(0.0);
+    vec3 wsum = vec3(0.0);
+    for (int i = 0; i < 7; i++) {
+      float t = float(i) / 6.0;
+      vec3 w = vec3(smoothstep(0.3, 1.0, t), max(0.0, 1.0 - abs(t - 0.5) * 2.5), smoothstep(0.7, 0.0, t));
+      acc += bgAt(uvd + dir * off * (t - 0.5) * 2.0) * w;
+      wsum += w;
+    }
+    col = acc / wsum;
+
+    // glass: soft diagonal sheen, brighter rim towards the corners, thin edge light, faint cool tint
+    float diag = dot(c, normalize(vec2(0.7, 1.0)));
+    float sheen = exp(-pow((diag - 0.12) * 5.5, 2.0)) * 0.09 + exp(-pow((diag + 0.24) * 14.0, 2.0)) * 0.045;
+    float rim = smoothstep(0.55, 1.0, r);
+    float edgePx = min(min(uv.x, 1.0 - uv.x) * uRes.x, min(uv.y, 1.0 - uv.y) * uRes.y);
+    float edge = 1.0 - smoothstep(0.0, 2.5 * uRes.y / 800.0, edgePx);
+    col *= mix(vec3(1.0), vec3(0.96, 0.99, 1.03), 0.5 * uGlass);
+    col *= 1.0 - rim * 0.12 * uGlass;
+    col += uGlass * uGlassLight * (sheen + rim * 0.06 + edge * 0.16);
+  }
+
+  gl_FragColor = vec4(mix(col, sharp, excl), 1.0);
+}
+`;
+
+// ---- background blur: composite + glyph mask -> half res, box down to quarter res, separable gaussian.
+// Colours are premultiplied by "not inside a glyph", so the glyphs never bleed into the blurred background.
+
+export const blurDownFragmentShader = /* glsl */ `
+precision highp float;
+
+uniform vec2 uRes;     // full-size buffer
+uniform vec2 uOutRes;  // size of the target being rendered
+uniform sampler2D uScene;
+uniform sampler2D uOverlay;
+uniform float uOverlayOn;
+${glyphGLSL}
+
+vec3 sceneAt(vec2 uv) {
+  vec3 c = texture(uScene, uv).rgb;
+  if (uOverlayOn > 0.5) {
+    vec4 o = texture(uOverlay, uv);
+    c = mix(c, o.rgb, o.a);
+  }
+  return c;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uOutRes;
+  vec2 px = 0.5 / uRes;
+  vec3 c = 0.25 * (sceneAt(uv + px * vec2(-1.0, -1.0)) + sceneAt(uv + px * vec2(1.0, -1.0))
+                 + sceneAt(uv + px * vec2(-1.0, 1.0)) + sceneAt(uv + px * vec2(1.0, 1.0)));
+  float m = min(uRes.x, uRes.y);
+  float d = glyphDist((uv - 0.5) * uRes / m);
+  // 1 outside, 0 inside; the mask is grown a little so glyph edge pixels never leak into the blur
+  float a = smoothstep(-2.0 / m, 2.0 / m, d - 3.0 / m);
+  gl_FragColor = vec4(c * a, a);
+}
+`;
+
+export const blurBoxFragmentShader = /* glsl */ `
+precision highp float;
+
+uniform sampler2D uSrc;
+uniform vec2 uSrcRes;
+uniform vec2 uOutRes;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uOutRes;
+  vec2 px = 0.5 / uSrcRes;
+  gl_FragColor = 0.25 * (texture(uSrc, uv + px * vec2(-1.0, -1.0)) + texture(uSrc, uv + px * vec2(1.0, -1.0))
+                       + texture(uSrc, uv + px * vec2(-1.0, 1.0)) + texture(uSrc, uv + px * vec2(1.0, 1.0)));
+}
+`;
+
+export const blurFragmentShader = /* glsl */ `
+precision highp float;
+
+uniform sampler2D uSrc;
+uniform vec2 uOutRes;
+uniform vec2 uDir;     // (1,0) or (0,1)
+uniform float uSigma;  // in texels of this target
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uOutRes;
+  float stride = max(1.0, uSigma / 4.0);
+  vec4 acc = vec4(0.0);
+  float wsum = 0.0;
+  for (int i = -12; i <= 12; i++) {
+    float x = float(i) * stride;
+    float w = exp(-0.5 * x * x / max(uSigma * uSigma, 1e-4));
+    acc += texture(uSrc, uv + uDir * x / uOutRes) * w;
+    wsum += w;
+  }
+  gl_FragColor = acc / wsum;
 }
 `;
