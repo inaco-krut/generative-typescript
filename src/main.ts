@@ -57,6 +57,11 @@ const uniforms = {
   uShapeWarpScale: { value: params.shapeWarpScale },
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
+  uLook: { value: params.look },
+  uLookA: { value: params.lookA },
+  uLookB: { value: params.lookB },
+  uLookC: { value: params.lookC },
+  uHeightTex: { value: null as THREE.Texture | null },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
   uWobble: { value: params.wobble },
@@ -272,7 +277,33 @@ function runEffects(): THREE.Texture | null {
   return effRT[cur].texture;
 }
 
+// The ridgeline look needs the height field as a texture: render it at half resolution first.
+let heightRT: THREE.WebGLRenderTarget | null = null;
+const blankTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+blankTex.needsUpdate = true;
+function renderHeightField(): void {
+  const size = uniforms.uRes.value;
+  const w = Math.max(1, Math.ceil(size.x / 2));
+  const h = Math.max(1, Math.ceil(size.y / 2));
+  if (!heightRT || heightRT.width !== w || heightRT.height !== h) {
+    heightRT?.dispose();
+    heightRT = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    });
+  }
+  const prev = size.clone();
+  size.set(w, h);
+  uniforms.uHeightTex.value = blankTex; // never sample the texture we are rendering into
+  uniforms.uOutputH.value = 1;
+  renderer.setRenderTarget(heightRT);
+  renderer.render(scene, camera);
+  uniforms.uOutputH.value = 0;
+  size.copy(prev);
+  uniforms.uHeightTex.value = heightRT.texture;
+}
+
 function renderFrame(): void {
+  if (params.look === 1 && floatRT) renderHeightField();
   renderer.setRenderTarget(sceneRT);
   renderer.render(scene, camera);
   const stacked = runEffects();
@@ -408,6 +439,10 @@ function syncUniforms(): void {
     gXform[i].set(m[0], m[1], m[2], m[3]);
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
   }
+  uniforms.uLook.value = params.look;
+  uniforms.uLookA.value = params.lookA;
+  uniforms.uLookB.value = params.lookB;
+  uniforms.uLookC.value = params.lookC;
   uniforms.uBlend.value = params.shapeBlend;
   uniforms.uSoft.value = params.shapeSoft;
   uniforms.uGrow.value = params.shapeGrow;
@@ -461,6 +496,7 @@ function applyPreset(name: string): void {
   refreshGlyphPicker();
   refreshGui();
   panel.rebuild();
+  relabelLook(false);
   fillCtl.disable(params.textAuto);
   letterColorCtl.disable(params.fillAuto);
   void rebuildAll(true);
@@ -601,6 +637,46 @@ gGlyph.add(params, 'mode', MODES).name('letters act as');
 gGlyph.add(params, 'influence', 0.02, 0.8, 0.01).name('influence radius');
 gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
+
+// How the landscape is drawn. The three sliders mean different things per look.
+const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4 } as const;
+interface LookSlider { label: string; min: number; max: number; step: number; value: number }
+const lookDefs: Record<number, (LookSlider | null)[]> = {
+  0: [null, null, null],
+  1: [
+    { label: 'rows', min: 16, max: 160, step: 1, value: 64 },
+    { label: 'relief height', min: 0, max: 4, step: 0.01, value: 1.8 },
+    { label: 'letter lift', min: 0, max: 2, step: 0.01, value: 0.8 },
+  ],
+  2: [{ label: 'band thickness', min: 0.1, max: 0.9, step: 0.01, value: 0.5 }, null, null],
+  3: [
+    { label: 'tile count', min: 6, max: 80, step: 0.5, value: 22 },
+    { label: 'density near letters', min: 0, max: 5, step: 0.05, value: 1.8 },
+    { label: 'grout width', min: 0.2, max: 4, step: 0.05, value: 1.5 },
+  ],
+  4: [
+    { label: 'grid cells', min: 6, max: 90, step: 0.5, value: 28 },
+    { label: 'lens strength', min: 0, max: 14, step: 0.05, value: 6 },
+    null,
+  ],
+};
+
+const gLook = gui.addFolder('Look');
+const lookCtl = gLook.add(params, 'look', LOOKS).name('draw the landscape as');
+const lookSliders = (['lookA', 'lookB', 'lookC'] as const).map((key) => gLook.add(params, key, 0, 1, 0.01));
+function relabelLook(resetValues: boolean): void {
+  const defs = lookDefs[params.look] ?? lookDefs[0];
+  lookSliders.forEach((c, i) => {
+    const d = defs[i];
+    c.show(!!d);
+    if (!d) return;
+    c.name(d.label).min(d.min).max(d.max).step(d.step);
+    if (resetValues) (params as unknown as Record<string, number>)[(['lookA', 'lookB', 'lookC'] as const)[i]] = d.value;
+    c.updateDisplay();
+  });
+}
+lookCtl.onChange(() => relabelLook(true));
+relabelLook(false);
 
 const gShape = gui.addFolder('Letter shape');
 gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('blend letters together');
@@ -819,7 +895,7 @@ async function computeDetails(key: string): Promise<void> {
 }
 
 function updateDetails(): void {
-  const want = fieldSupported && !params.animate && params.details && !isMorphing();
+  const want = fieldSupported && !params.animate && params.details && params.look === 0 && !isMorphing();
   if (!want) {
     if (shownKey || pendingKey) hideDetails();
     pendingKey = '';

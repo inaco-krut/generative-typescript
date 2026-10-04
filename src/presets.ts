@@ -17,6 +17,11 @@ export interface Params {
   glyphs: GlyphDef[];
   effects: EffectLayer[]; // stacked effect layers, applied in order
   mode: number; // 0 offset lines, 1 mountain, 2 basin
+  // how the landscape is drawn
+  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid
+  lookA: number; // look-specific sliders; their meaning depends on `look`
+  lookB: number;
+  lookC: number;
   // letter shape (all glyphs)
   shapeBlend: number; // how much neighbouring letters fuse together
   shapeSoft: number; // corner softening
@@ -67,6 +72,10 @@ export const defaultParams: Params = {
   glyphs: [{ ...defaultGlyph }],
   effects: [],
   mode: 0,
+  look: 0,
+  lookA: 0,
+  lookB: 0,
+  lookC: 0,
   shapeBlend: 0,
   shapeSoft: 0,
   shapeGrow: 0,
@@ -237,6 +246,27 @@ export const presets: Record<string, PresetData> = {
     "textFill": "#ffffff",
     "words": "RIDGE, BASIN, SUMMIT, BEARING",
     "caption": "LINES OF EQUAL HEIGHT TRACE THE QUIET SHAPE OF THE LAND BENEATH THE LETTER"
+  },
+  // Looks: the same landscape and letters, drawn four other ways. Pick one, then tune the sliders.
+  'Look: Ridgeline': {
+    glyphs: [{ text: 'Hub', font: 'Inter', size: 1.3, posX: 0, posY: -0.02, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
+    look: 1, lookA: 64, lookB: 1.8, lookC: 0.8, mode: 1, palette: 'Survey', fill: 0.9, fillColor: '#1d1a16', fillAuto: false,
+    rough: 0.32, freq: 1.8, warp: 0.4, influence: 0.45, slope: 0.4, wobble: 0.3, lineWidth: 1.1, grain: 0.05, animate: false, details: false,
+  },
+  'Look: Op-art bands': {
+    glyphs: [{ text: 'Hub', font: 'Archivo Black', size: 1.3, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
+    look: 2, lookA: 0.5, mode: 0, palette: 'Ink', fill: 1, spacing: 0.03, tint: 0, rough: 0.5, freq: 2.2, warp: 0.6, influence: 0.7, slope: 1, wobble: 0.25,
+    grain: 0.02, animate: false, details: false,
+  },
+  'Look: Mosaic': {
+    glyphs: [{ text: 'Hub', font: 'Playfair Display', size: 1.3, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
+    look: 3, lookA: 22, lookB: 1.8, lookC: 1.5, mode: 1, palette: 'Survey', fill: 0.9, fillColor: '#1d1a16', fillAuto: false,
+    rough: 0.45, freq: 2, warp: 0.5, influence: 0.5, slope: 0.6, wobble: 0.2, lineWidth: 1, grain: 0.04, animate: false, details: false,
+  },
+  'Look: Warped grid': {
+    glyphs: [{ text: 'Hub', font: 'Space Grotesk', size: 1.3, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
+    look: 4, lookA: 28, lookB: 6, mode: 1, palette: 'Blueprint', fill: 0.9, fillAuto: true,
+    rough: 0.3, freq: 1.6, warp: 0.4, influence: 0.5, slope: 0.8, wobble: 0.2, lineWidth: 0.9, grain: 0.03, animate: false, details: false,
   },
   'R&D Mountain': {
     text: 'R&D',

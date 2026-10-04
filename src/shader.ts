@@ -147,6 +147,11 @@ uniform float uFill;
 uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
 uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
+uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid
+uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
+uniform float uLookB;
+uniform float uLookC;
+uniform sampler2D uHeightTex; // height field, half resolution (ridgeline only)
 
 uniform vec3 uPaper;
 uniform vec3 uInk;
@@ -178,6 +183,10 @@ float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
+vec2 hash22(vec2 p) {
+  return vec2(hash(p), hash(p + 19.19));
+}
+
 vec3 ramp(float t) {
   return t < 0.5 ? mix(uLow, uMid, t * 2.0) : mix(uMid, uHigh, t * 2.0 - 1.0);
 }
@@ -186,19 +195,21 @@ float lineMask(float dist, float fw, float widthPx) {
   return clamp(widthPx * 0.5 - dist / max(fw, 1e-6) + 0.5, 0.0, 1.0);
 }
 
-void main() {
-  vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
-
-  float d = glyphDist(q);
+// The landscape: terrain, reshaped around the letters. Also returns the distance to the letters.
+float fieldAt(vec2 q, out float d) {
+  d = glyphDist(q);
   float w = 1.0 - smoothstep(0.0, uInfluence, max(d, 0.0));
   float g = uMode == 0 ? abs(d) : (uMode == 1 ? -d : d);
   float amp = mix(1.0, uWobble, w);
-  float H = terrain(q) * uRough * amp + g * uSlope * w;
-  if (uOutputH > 0.5) {
-    gl_FragColor = vec4(H, d, 0.0, 1.0); // height + distance to the glyphs
-    return;
-  }
+  return terrain(q) * uRough * amp + g * uSlope * w;
+}
 
+float toneOf(float H) {
+  return smoothstep(-0.15, uRough + 0.2, H);
+}
+
+// ---- look 0: topographic contour map
+vec3 lookTopo(float d, float H) {
   float v = H / uSpacing;
   float fw = fwidth(v);
   float dist = abs(fract(v - 0.5) - 0.5);
@@ -207,8 +218,7 @@ void main() {
 
   // hypsometric tint, banded per index interval
   float Hq = floor(v / 5.0) * 5.0 * uSpacing;
-  float tn = smoothstep(-0.15, uRough + 0.2, Hq);
-  vec3 col = mix(uPaper, ramp(tn), uTint);
+  vec3 col = mix(uPaper, ramp(toneOf(Hq)), uTint);
 
   // hillshade from screen-space slope
   vec2 grad = vec2(dFdx(H), dFdy(H)) * uRes.y * 0.8;
@@ -229,6 +239,125 @@ void main() {
   major *= knock;
   col = mix(col, uInk, minor * (1.0 - isIndex) * 0.9);
   col = mix(col, uIndex, major * isIndex);
+  return col;
+}
+
+// ---- look 1: ridgeline. Horizontal lines pushed up by the terrain, front lines hide the ones behind.
+vec3 lookRidge(vec2 fc) {
+  const int K = 12;
+  float rows = max(uLookA, 4.0);
+  float S = uRes.y / rows;                       // row spacing in px
+  float scale = uLookB * uRes.y * 0.35;           // px of lift per unit of height
+  float k0 = floor(fc.y / S);
+  vec3 ink = uIndex;
+  vec3 col = uPaper;
+  for (int j = K; j >= -K; j--) {                // back (top) to front (bottom)
+    float rk = (k0 + float(j) + 0.5) * S;
+    vec2 hd = texture(uHeightTex, vec2(fc.x / uRes.x, rk / uRes.y)).rg; // height, distance to the letters
+    float h = hd.x + uLookC * 0.25 * (1.0 - smoothstep(-0.015, 0.015, hd.y)); // letters rise as plateaus
+    float yk = rk + clamp(h * scale, -float(K) * S, float(K) * S);
+    if (fc.y < yk) col = uPaper;                  // hide whatever is behind this line
+    float sl = abs(dFdx(yk));
+    float m = lineMask(abs(fc.y - yk) / sqrt(1.0 + sl * sl), 1.0, max(uLineW * 1.4, 1.0));
+    col = mix(col, ink, m);
+  }
+  return col;
+}
+
+// ---- look 2: op-art bands. The height field as bold alternating two-tone bands.
+vec3 lookBands(float H) {
+  float v = H / uSpacing;
+  float tri = abs(fract(v * 0.5) - 0.5) * 2.0;    // triangle wave, one period per two bands
+  float aa = max(fwidth(tri), 1e-4);
+  float m = smoothstep(uLookA - aa, uLookA + aa, tri);
+  vec3 light = mix(uPaper, ramp(toneOf(floor(v) * uSpacing)), uTint);
+  return mix(light, uInk, m);
+}
+
+// ---- look 3: mosaic. Voronoi tiles coloured by the height at their centre; denser near the letters.
+vec3 lookMosaic(vec2 q, float d) {
+  float w = 1.0 - smoothstep(0.0, uInfluence, max(d, 0.0));
+  float dens = uLookA * (1.0 + uLookB * w);
+  vec2 p = q * dens;
+  vec2 ip = floor(p);
+  vec2 fp = fract(p);
+  float F1 = 8.0;
+  float F2 = 8.0;
+  vec2 cell = vec2(0.0);
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 o = hash22(ip + g + uSeed);
+      o = 0.5 + 0.5 * sin(6.2831853 * o + uTime * 0.3);
+      vec2 r = g + o - fp;
+      float dd = dot(r, r);
+      if (dd < F1) { F2 = F1; F1 = dd; cell = ip + g + o; }
+      else if (dd < F2) { F2 = dd; }
+    }
+  }
+  float dc;
+  float Hc = fieldAt(cell / dens, dc);
+  float tone = clamp(toneOf(Hc) + (hash(cell) - 0.5) * 0.4, 0.0, 1.0);
+  vec3 col = mix(uPaper, ramp(tone), 0.35 + 0.65 * uTint);
+  col = mix(col, uIndex, smoothstep(0.45, 1.0, tone) * 0.75); // tall tiles lean towards the accent colour
+  float edge = sqrt(F2) - sqrt(F1);
+  float wc = 0.04 * uLookC * max(uLineW, 0.3);
+  float aa = max(fwidth(edge), 1e-4);
+  float grout = 1.0 - smoothstep(wc * 0.5 - aa, wc * 0.5 + aa, edge);
+  return mix(col, uInk, grout * 0.9);
+}
+
+// ---- look 4: warped grid. A layout grid bent like a lens around the letters (with a hint of terrain).
+float lensField(vec2 q) {
+  float d = glyphDist(q);
+  float w = 1.0 - smoothstep(0.0, uInfluence, max(d, 0.0));
+  float g = uMode == 0 ? abs(d) : (uMode == 1 ? -d : d);
+  return g * w + 0.08 * terrain(q) * uRough;
+}
+
+vec3 lookGrid(vec2 q, float H) {
+  float e = 0.02;
+  float L0 = lensField(q);
+  vec2 grad = vec2(lensField(q + vec2(e, 0.0)) - L0, lensField(q + vec2(0.0, e)) - L0) / e;
+  vec2 disp = grad * uLookB * 0.012;
+  disp *= min(1.0, 0.12 / max(length(disp), 1e-4));
+  vec2 p = (q - disp) * uLookA;
+  vec2 gp = abs(fract(p - 0.5) - 0.5);
+  vec2 fw = fwidth(p);
+  vec2 idx = floor(p + 0.5);
+  vec2 isMajor = step(mod(idx, 5.0), vec2(0.5));
+  float lx = lineMask(gp.x, fw.x, uLineW * (1.0 + isMajor.x));
+  float ly = lineMask(gp.y, fw.y, uLineW * (1.0 + isMajor.y));
+  vec3 col = mix(uPaper, ramp(toneOf(H)), uTint * 0.8);
+  float m = max(lx, ly);
+  float major = max(lx * isMajor.x, ly * isMajor.y);
+  col = mix(col, uInk, m * 0.85);
+  return mix(col, uIndex, major);
+}
+
+void main() {
+  vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
+
+  float d;
+  float H = fieldAt(q, d);
+  if (uOutputH > 0.5) {
+    gl_FragColor = vec4(H, d, 0.0, 1.0); // height + distance to the glyphs
+    return;
+  }
+
+  vec3 col;
+  if (uLook == 1) col = lookRidge(gl_FragCoord.xy);
+  else if (uLook == 2) col = lookBands(H);
+  else if (uLook == 3) col = lookMosaic(q, d);
+  else if (uLook == 4) col = lookGrid(q, H);
+  else col = lookTopo(d, H);
+
+  if (uLook != 0) {
+    // the letters' fill sits on top of the other looks
+    float fd = max(fwidth(d), 1e-6);
+    float inside = 1.0 - smoothstep(-fd, fd, d);
+    col = mix(col, uFillCol, inside * uFill);
+  }
 
   col += (hash(gl_FragCoord.xy) - 0.5) * uGrain;
   gl_FragColor = vec4(col, 1.0);
