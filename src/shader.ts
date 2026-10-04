@@ -402,3 +402,23 @@ void main() {
   gl_FragColor = acc / wsum;
 }
 `;
+
+// Copies the map with the detail layer on top; the start of the effect stack.
+export const compositeFragmentShader = /* glsl */ `
+precision highp float;
+
+uniform vec2 uRes;
+uniform sampler2D uScene;
+uniform sampler2D uOverlay;
+uniform float uOverlayOn;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 c = texture(uScene, uv).rgb;
+  if (uOverlayOn > 0.5) {
+    vec4 o = texture(uOverlay, uv);
+    c = mix(c, o.rgb, o.a);
+  }
+  gl_FragColor = vec4(c, 1.0);
+}
+`;

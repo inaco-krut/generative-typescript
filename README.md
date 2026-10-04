@@ -20,6 +20,8 @@ Other scripts: `npm run typecheck`, `npm run build`, `npm run build:single` (one
 - **upload font…** loads your own TTF/OTF/WOFF. **save PNG** exports the current frame.
 - **Static detail layer:** untick **animate** and the map gains elevation labels (`1444m`) that follow the contour lines, spot heights at peaks, and a small cluster of words, icons and a caption. It is hidden while animating and is included in **save PNG**. Tune it under *Detail layer*.
 - **Multiple glyphs:** *add glyph* in the Glyphs section (up to 8). Click a glyph to select it, drag to move, drag a corner handle or use the wheel to scale, arrow keys to nudge, Delete to remove. Typing changes the text of the glyph being edited. Glyphs share one landscape, so their contours merge.
+- **Letter shape:** the *Letter shape* section blends letters into each other (smooth union), softens corners, changes weight, and warps letterforms with noise. Per glyph: rotation (also a handle above the selection box), skew, stretch, and *morph to* a second text that you scrub with *morph amount*.
+- **Effects:** the left panel is a gallery of ~17 effects (halftone, glitch, neon glow, bevel, hatch, duotone, ...) with live previews of your artwork. Click to add one to the stack; each layer has opacity, blend mode, its own sliders and colours, and can be reordered, hidden or removed. Effects run on the map and detail layer; blur and glass go on top. The stack is saved with presets.
 - `window.__params` exposes all parameters in the devtools console for quick experiments.
 
 ## How it works
@@ -28,4 +30,5 @@ Other scripts: `npm run typecheck`, `npm run build`, `npm run build:single` (one
 2. `src/shader.ts` blends that SDF with animated domain-warped simplex noise into a height field `H`, then draws
    anti-aliased iso-lines of `H` (every 5th is an index contour), with hypsometric tint, hillshade and grain.
 3. `src/details.ts` (detail layer) reads the height field back from the GPU, traces contours with marching squares, places labels along them without collisions, and builds a mask so the shader can cut the lines away behind the text.
-4. `src/main.ts` wires up Three.js, the lil-gui panel, typing, and SDF-to-SDF morphing.
+4. `src/effects.ts` holds the effect gallery (one GLSL snippet per effect); `src/effectsUI.ts` is the gallery/stack panel. To add an effect, add an entry to `effectDefs`.
+5. `src/main.ts` wires up Three.js, the lil-gui panel, typing, and SDF-to-SDF morphing.

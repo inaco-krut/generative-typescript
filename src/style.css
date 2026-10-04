@@ -22,3 +22,38 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 #selection .se { right: -6px; bottom: -6px; cursor: nwse-resize; }
 #selection .rot { left: 50%; top: -30px; margin-left: -6px; border-radius: 50%; cursor: grab; }
 #selection .rot::after { content: ''; position: absolute; left: 5px; top: 12px; width: 1px; height: 18px; background: #fff; }
+
+/* ---- effects panel (left) ---- */
+#effects {
+  position: fixed; left: 12px; top: 12px; width: 292px; max-height: calc(100% - 24px); overflow-y: auto;
+  z-index: 10; box-sizing: border-box;
+  background: #1f1f1f; color: #ebebeb; border-radius: 4px;
+  font: 11px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --accent: #2cc9ff;
+}
+#effects button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+#effects .fx-title { display: block; width: 100%; text-align: left; padding: 7px 10px; font-weight: 600; background: #111; }
+#effects .fx-title::after { content: '▾'; float: right; }
+#effects.collapsed .fx-title::after { content: '▸'; }
+#effects.collapsed .fx-body-wrap { display: none; }
+#effects .fx-section { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px 4px; color: #a5a5a5; text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+#effects .fx-mini { padding: 1px 6px; border-radius: 3px; background: #3c3c3c; text-transform: none; letter-spacing: 0; }
+#effects .fx-mini:hover { background: #4a4a4a; }
+#effects .fx-empty { padding: 4px 10px 8px; color: #8a8a8a; }
+#effects .fx-layer { margin: 0 8px 6px; background: #2a2a2a; border-radius: 3px; }
+#effects .fx-head { display: flex; align-items: center; gap: 6px; padding: 5px 6px; }
+#effects .fx-name { flex: 1; text-align: left; font-weight: 600; padding: 2px 0; }
+#effects .fx-btns { display: flex; gap: 3px; }
+#effects .fx-body { padding: 2px 8px 8px; display: grid; gap: 5px; }
+#effects .fx-row { display: grid; grid-template-columns: 92px 1fr 40px; align-items: center; gap: 6px; }
+#effects .fx-row > span { color: #cfcfcf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#effects .fx-row > output { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+#effects .fx-row select { grid-column: 2 / 4; background: #3c3c3c; color: inherit; border: 0; border-radius: 3px; padding: 2px; font: inherit; }
+#effects input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
+#effects input[type=color] { width: 100%; height: 18px; padding: 0; border: 0; background: none; }
+#effects input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+#effects .fx-gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 2px 8px 10px; }
+#effects .fx-card { display: block; padding: 0; text-align: left; background: #2a2a2a; border-radius: 3px; overflow: hidden; }
+#effects .fx-card:hover { outline: 1px solid var(--accent); }
+#effects .fx-card canvas { display: block; width: 100%; height: auto; background: #111; }
+#effects .fx-card span { display: block; padding: 3px 6px 4px; }

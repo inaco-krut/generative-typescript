@@ -1,3 +1,5 @@
+import type { EffectLayer } from './effects';
+
 export interface GlyphDef {
   text: string;
   font: string;
@@ -13,6 +15,7 @@ export interface GlyphDef {
 
 export interface Params {
   glyphs: GlyphDef[];
+  effects: EffectLayer[]; // stacked effect layers, applied in order
   mode: number; // 0 offset lines, 1 mountain, 2 basin
   // letter shape (all glyphs)
   shapeBlend: number; // how much neighbouring letters fuse together
@@ -62,6 +65,7 @@ export const defaultGlyph: GlyphDef = {
 
 export const defaultParams: Params = {
   glyphs: [{ ...defaultGlyph }],
+  effects: [],
   mode: 0,
   shapeBlend: 0,
   shapeSoft: 0,

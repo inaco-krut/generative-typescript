@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
 import {
-  blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, fragmentShader, postFragmentShader, vertexShader,
+  blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, compositeFragmentShader, fragmentShader,
+  postFragmentShader, vertexShader,
 } from './shader';
+import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
+import { EffectsPanel } from './effectsUI';
 import { renderGlyphSDF } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
@@ -172,8 +175,7 @@ fxScene.add(fxMesh);
 
 function fxPass(material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget): void {
   fxMesh.material = material;
-  const out = material.uniforms.uOutRes.value as THREE.Vector2;
-  out.set(target.width, target.height);
+  (material.uniforms.uOutRes?.value as THREE.Vector2 | undefined)?.set(target.width, target.height);
   renderer.setRenderTarget(target);
   renderer.render(fxScene, camera);
 }
@@ -193,9 +195,91 @@ function runBlur(): void {
   fxPass(fxMaterials.gauss, blurQuarter);
 }
 
+// ---- effect stack: composite (map + detail layer) -> one pass per layer, ping-ponging between two targets
+const makeFullRT = () => new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+const effRT = [makeFullRT(), makeFullRT()];
+let detailsOn = false; // is the detail layer currently valid and showing?
+
+const compositeMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uRes: uniforms.uRes,
+    uScene: { value: sceneRT.texture },
+    uOverlay: { value: overlayTex },
+    uOverlayOn: { value: 0 },
+  },
+  vertexShader,
+  fragmentShader: compositeFragmentShader,
+});
+
+const effectMats = new Map<string, THREE.ShaderMaterial>();
+function effectMaterial(def: EffectDef): THREE.ShaderMaterial {
+  let m = effectMats.get(def.id);
+  if (!m) {
+    m = new THREE.ShaderMaterial({
+      uniforms: {
+        uRes: uniforms.uRes,
+        uPrev: { value: null as THREE.Texture | null },
+        uOpacity: { value: 1 },
+        uLayerBlend: { value: 0 },
+        uA: { value: new THREE.Vector4() },
+        uB: { value: new THREE.Vector4() },
+        uC1: { value: new THREE.Vector3() },
+        uC2: { value: new THREE.Vector3() },
+        ...glyphUniforms,
+      },
+      vertexShader,
+      fragmentShader: effectFragmentShader(def),
+    });
+    effectMats.set(def.id, m);
+  }
+  return m;
+}
+
+// colour pickers give sRGB hex; the effect shaders work on the same raw values the canvas shows
+const hexToVec3 = (hex: string, out: THREE.Vector3) => {
+  const n = parseInt(hex.slice(1), 16) || 0;
+  return out.set(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+};
+
+const blendIndex: Record<string, number> = { normal: 0, add: 1, multiply: 2, screen: 3, overlay: 4, difference: 5 };
+
+function setLayerUniforms(mat: THREE.ShaderMaterial, layer: EffectLayer, prev: THREE.Texture): void {
+  const u = mat.uniforms;
+  const p = layer.p;
+  u.uPrev.value = prev;
+  u.uOpacity.value = layer.opacity;
+  u.uLayerBlend.value = blendIndex[layer.blend] ?? 0;
+  u.uA.value.set(p[0] ?? 0, p[1] ?? 0, p[2] ?? 0, p[3] ?? 0);
+  u.uB.value.set(p[4] ?? 0, p[5] ?? 0, p[6] ?? 0, p[7] ?? 0);
+  hexToVec3(layer.c1, u.uC1.value);
+  hexToVec3(layer.c2, u.uC2.value);
+}
+
+/** Runs every visible layer in order; returns the final texture, or null when there is nothing to run. */
+function runEffects(): THREE.Texture | null {
+  const layers = params.effects.filter((l) => l.on && effectDefs.some((d) => d.id === l.id));
+  if (!layers.length) return null;
+  compositeMat.uniforms.uOverlayOn.value = detailsOn ? 1 : 0;
+  fxPass(compositeMat, effRT[0]);
+  let cur = 0;
+  for (const layer of layers) {
+    const def = effectDefs.find((d) => d.id === layer.id) as EffectDef;
+    const mat = effectMaterial(def);
+    setLayerUniforms(mat, layer, effRT[cur].texture);
+    fxPass(mat, effRT[1 - cur]);
+    cur = 1 - cur;
+  }
+  return effRT[cur].texture;
+}
+
 function renderFrame(): void {
   renderer.setRenderTarget(sceneRT);
   renderer.render(scene, camera);
+  const stacked = runEffects();
+  const src = stacked ?? sceneRT.texture;
+  postUniforms.uScene.value = src;
+  fxMaterials.down.uniforms.uScene.value = src;
+  postUniforms.uOverlayOn.value = detailsOn && !stacked ? 1 : 0; // the stack already contains the detail layer
   if (params.blur > 0.001) runBlur();
   renderer.setRenderTarget(null);
   renderer.render(postScene, camera);
@@ -213,6 +297,8 @@ function resize(): void {
   blurHalf.setSize(hw, hh);
   blurQuarter.setSize(Math.max(1, Math.ceil(hw / 2)), Math.max(1, Math.ceil(hh / 2)));
   blurTemp.setSize(blurQuarter.width, blurQuarter.height);
+  effRT[0].setSize(size.x, size.y);
+  effRT[1].setSize(size.x, size.y);
   overlay.width = maskCanvas.width = size.x;
   overlay.height = maskCanvas.height = size.y;
 }
@@ -374,6 +460,7 @@ function applyPreset(name: string): void {
   applyPalette();
   refreshGlyphPicker();
   refreshGui();
+  panel.rebuild();
   fillCtl.disable(params.textAuto);
   letterColorCtl.disable(params.fillAuto);
   void rebuildAll(true);
@@ -642,14 +729,14 @@ let computing = false;
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(xs.length, 1);
 
 function hideDetails(): void {
-  postUniforms.uOverlayOn.value = 0;
+  detailsOn = false;
   uniforms.uMaskOn.value = 0;
   shownKey = '';
 }
 
 function detailKey(): string {
   const size = uniforms.uRes.value;
-  return `${JSON.stringify({ ...params, animate: false, glass: 0, glassLight: 0, blur: 0 })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
+  return `${JSON.stringify({ ...params, animate: false, glass: 0, glassLight: 0, blur: 0, effects: [] })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
 }
 
 async function computeDetails(key: string): Promise<void> {
@@ -724,7 +811,7 @@ async function computeDetails(key: string): Promise<void> {
     maskTex.needsUpdate = true;
     overlayTex.needsUpdate = true;
     uniforms.uMaskOn.value = 1;
-    postUniforms.uOverlayOn.value = 1;
+    detailsOn = true;
     shownKey = key;
   } finally {
     computing = false;
@@ -748,6 +835,91 @@ function updateDetails(): void {
     return;
   }
   if (performance.now() >= dueAt) void computeDetails(key);
+}
+
+// ---------------------------------------------------------------- effects panel + gallery thumbnails
+
+const THUMB_W = 176;
+const thumbSize = () => {
+  const r = uniforms.uRes.value;
+  return { w: THUMB_W, h: Math.max(1, Math.round((THUMB_W * r.y) / r.x)) };
+};
+const tinyRT = [makeFullRT(), makeFullRT()];
+let thumbQueue: EffectDef[] = [];
+let thumbKey = '';
+let thumbDueAt = 0;
+let thumbsStale = true;
+
+const panel = new EffectsPanel({
+  getLayers: () => params.effects,
+  setLayers: (layers) => {
+    params.effects = layers;
+  },
+  requestThumbs: () => {
+    thumbsStale = true;
+    thumbKey = '';
+  },
+  get thumbSize() {
+    return thumbSize();
+  },
+});
+document.body.appendChild(panel.root);
+if (window.innerWidth < 900) panel.root.classList.add('collapsed'); // keep small screens uncluttered
+
+/** Render the artwork small, then queue one preview per effect (a few per frame, so shaders compile gradually). */
+function startThumbs(): void {
+  const { w, h } = thumbSize();
+  for (const rt of tinyRT) if (rt.width !== w || rt.height !== h) rt.setSize(w, h);
+  const prevRes = uniforms.uRes.value.clone();
+  const maskOn = uniforms.uMaskOn.value;
+  uniforms.uRes.value.set(w, h);
+  uniforms.uMaskOn.value = 0;
+  syncUniforms();
+  // keep the look faithful at thumbnail size: lines and grain are measured in pixels
+  uniforms.uLineW.value = Math.max(0.35, (uniforms.uLineW.value * h) / prevRes.y);
+  uniforms.uGrain.value = 0;
+  renderer.setRenderTarget(tinyRT[0]);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  uniforms.uRes.value.copy(prevRes);
+  uniforms.uMaskOn.value = maskOn;
+  thumbQueue = [...effectDefs];
+}
+
+function stepThumbs(): void {
+  const { w, h } = thumbSize();
+  for (let n = 0; n < 3 && thumbQueue.length; n++) {
+    const def = thumbQueue.shift() as EffectDef;
+    const mat = effectMaterial(def);
+    setLayerUniforms(mat, newLayer(def), tinyRT[0].texture);
+    mat.uniforms.uOpacity.value = 1;
+    const prevRes = uniforms.uRes.value.clone();
+    uniforms.uRes.value.set(w, h);
+    fxPass(mat, tinyRT[1]);
+    renderer.setRenderTarget(null);
+    const buf = new Uint8Array(w * h * 4);
+    renderer.readRenderTargetPixels(tinyRT[1], 0, 0, w, h, buf);
+    uniforms.uRes.value.copy(prevRes);
+    panel.setThumbnail(def.id, buf, w, h);
+  }
+}
+
+function updateThumbs(): void {
+  if (panel.collapsed) return;
+  if (thumbQueue.length) {
+    stepThumbs();
+    return;
+  }
+  // re-render previews a moment after the artwork changes (not on every animation frame)
+  const key = `${JSON.stringify({ ...params, effects: [], animate: false, glass: 0, glassLight: 0, blur: 0 })}|${sdfVersion}|${uniforms.uRes.value.x}x${uniforms.uRes.value.y}`;
+  if (key !== thumbKey) {
+    thumbKey = key;
+    thumbDueAt = performance.now() + 700;
+    thumbsStale = true;
+  } else if (thumbsStale && performance.now() >= thumbDueAt && !isMorphing()) {
+    thumbsStale = false;
+    startThumbs();
+  }
 }
 
 // ---------------------------------------------------------------- select / move / scale glyphs
@@ -934,6 +1106,7 @@ function frame(): void {
   syncUniforms();
   renderFrame();
   updateDetails();
+  updateThumbs();
   updateSelectionUI();
   requestAnimationFrame(frame);
 }
