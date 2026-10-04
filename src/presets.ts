@@ -114,6 +114,130 @@ export type PresetData = Partial<Params> & Partial<GlyphDef>;
 
 export const presets: Record<string, PresetData> = {
   Default: {},
+  hubworks: {
+    "glyphs": [
+      {
+        "text": "Hubworks",
+        "font": "Inter",
+        "size": 1.855,
+        "posX": -0.008,
+        "posY": 0.042,
+        "rot": 0,
+        "skew": 0.36,
+        "stretch": 0.82,
+        "text2": "",
+        "morph": 0
+      }
+    ],
+    "effects": [
+      {
+        "id": "echo",
+        "on": true,
+        "opacity": 0.1,
+        "blend": "normal",
+        "p": [
+          0.0025,
+          0.1,
+          6,
+          1
+        ],
+        "c1": "#ff5a36",
+        "c2": "#000000"
+      },
+      {
+        "id": "grid",
+        "on": true,
+        "opacity": 0.05,
+        "blend": "normal",
+        "p": [
+          5,
+          1,
+          4,
+          0.36
+        ],
+        "c1": "#4aa3ff",
+        "c2": "#000000"
+      },
+      {
+        "id": "pixelate",
+        "on": false,
+        "opacity": 0.07,
+        "blend": "normal",
+        "p": [
+          10
+        ],
+        "c1": "#ffffff",
+        "c2": "#000000"
+      },
+      {
+        "id": "grain",
+        "on": true,
+        "opacity": 0.1,
+        "blend": "normal",
+        "p": [
+          0.04,
+          1.2,
+          1,
+          0.2
+        ],
+        "c1": "#ffffff",
+        "c2": "#000000"
+      },
+      {
+        "id": "glitch",
+        "on": true,
+        "opacity": 0.46,
+        "blend": "normal",
+        "p": [
+          0.06,
+          4,
+          0.8,
+          0
+        ],
+        "c1": "#ffffff",
+        "c2": "#000000"
+      }
+    ],
+    "mode": 1,
+    "shapeBlend": 0,
+    "shapeSoft": 0,
+    "shapeGrow": -0.001,
+    "shapeWarp": 0.315,
+    "shapeWarpScale": 6.2,
+    "shapeWarpSpeed": 0.195,
+    "influence": 0.53,
+    "slope": 0.25,
+    "wobble": 0.07,
+    "rough": 0.27,
+    "freq": 2.31,
+    "warp": 0,
+    "drift": 0.152,
+    "seed": 3.854,
+    "spacing": 0.03,
+    "lineWidth": 1.1,
+    "palette": "Midnight",
+    "tint": 0.39,
+    "shade": 0.04,
+    "grain": 0.067,
+    "glass": 0,
+    "glassLight": 1,
+    "blur": 0,
+    "fill": 1,
+    "fillAuto": true,
+    "fillColor": "#111111",
+    "animate": true,
+    "details": false,
+    "showLabels": true,
+    "showSpots": true,
+    "showNotes": true,
+    "labelStep": 111,
+    "labelBase": 500,
+    "labelSize": 9,
+    "textAuto": true,
+    "textFill": "#ffffff",
+    "words": "RIDGE, BASIN, SUMMIT, BEARING",
+    "caption": "LINES OF EQUAL HEIGHT TRACE THE QUIET SHAPE OF THE LAND BENEATH THE LETTER"
+  },
   'R&D Mountain': {
     text: 'R&D',
     font: 'Pacifico',

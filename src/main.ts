@@ -17,7 +17,7 @@ import {
 
 const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
 
-const params: Params = resolvePreset(presets['R&D Mountain']);
+const params: Params = resolvePreset(presets.hubworks);
 const store = new GlyphStore();
 // per-glyph animation state; these arrays are shared with the shader uniforms
 const gPos = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector2());
@@ -448,7 +448,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(Math.ma
 
 const userPresets = loadUserPresets();
 const allPresetNames = () => [...builtinPresetNames, ...Object.keys(userPresets).filter((n) => !(n in presets))];
-const presetState = { preset: 'R&D Mountain', name: '' };
+const presetState = { preset: 'hubworks', name: '' };
 
 function applyPreset(name: string): void {
   Object.assign(params, resolvePreset(presets[name] ?? userPresets[name]));
