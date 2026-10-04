@@ -147,14 +147,14 @@ uniform float uFill;
 uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
 uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
-uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 stipple
+uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 particle waves
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
 uniform float uLookD;
-uniform vec3 uIntroS;      // stipple intro: progress (1 = finished), reveal front x, camera zoom
-uniform vec4 uFp;          // stipple: first letter-cell left edge, cell width, letter count, row centre (world units)
 uniform sampler2D uHeightTex; // height field, half resolution (ridgeline only)
+uniform highp sampler2D uParticles; // particle waves: displaced position (xy), brightness (z), size (w) per particle
+uniform vec4 uPGrid;       // particle waves: lattice width, height, particles per short side, aspect
 
 uniform vec3 uPaper;
 uniform vec3 uInk;
@@ -338,89 +338,28 @@ vec3 lookGrid(vec2 q, float H) {
   return mix(col, uIndex, major);
 }
 
-// ---- look 5: stipple. Letters are tiny dots packed into fingerprint ridges (or loose dots), clipped by the
-// letter outline; the background is a sparse dot lattice pushed into rings by a wave travelling away from
-// the letters. An intro timeline (uIntroS) plays it from black: dots appear, the camera pulls back and a
-// front sweeps along the word, dots locking into ridges behind it.
-vec3 lookStipple(vec2 q) {
-  float m = min(uRes.x, uRes.y);
-  float t = uTime;
-  float d = glyphDist(q);
-  float lum = 1.0;
-  float dotM = 0.0;
-
-  if (d < 0.0) {
-    // ---- inside a letter: fine lattice, each letter gets its own fingerprint
-    float zoom = uIntroS.z;
-    float ridgeSp = max(uLookC, 0.003);
-    float cells = 4.0 / ridgeSp;
-    vec2 p = q * cells;
-    vec2 ip = floor(p);
-    vec2 fp = fract(p);
-    float h1 = hash(ip + uSeed);
-    vec2 h2 = hash22(ip + 3.3 + uSeed);
-    float w = hash(ip + 9.1 + uSeed);
-    vec2 o = 0.5 + (h2 - 0.5) * 0.24;
-    vec2 cq = (ip + o) / cells;
-
-    float n = max(uFp.z, 1.0);
-    float c = clamp(floor((cq.x - uFp.x) / max(uFp.y, 1e-4)), 0.0, n - 1.0);
-    vec2 hc = hash22(vec2(c, 17.0 + uSeed));
-    float ang = hc.x * 3.14159265;
-    vec2 core = vec2((hc.x - 0.5) * 0.6 * uFp.y, (hc.y - 0.5) * 1.1 * uFp.y);
-    vec2 l = cq - vec2(uFp.x + (c + 0.5) * uFp.y, uFp.w) - core;
-    float ca = cos(ang);
-    float sa = sin(ang);
-    vec2 lr = vec2(ca * l.x + sa * l.y, -sa * l.x + ca * l.y);
-    float asp = 0.55 + 0.9 * hash(vec2(c, 5.1));
-    float phase = length(lr * vec2(1.0, asp)) / (ridgeSp * zoom) + 0.45 * snoise(vec3(cq * 5.0 / zoom, 2.7 + t * 0.05));
-    float ridge = 0.5 + 0.5 * cos(6.2831853 * phase);
-
-    // letters resolve from loose dots into ridges one after another (the first letter last)
-    float amount = clamp((uLookD * (n + 1.0) - (n - 1.0 - c)) * 0.5, 0.0, 1.0);
-    // intro: loose dots gather ahead of the sweeping front, ridges lock in just behind it
-    float fd = q.x - uIntroS.y;
-    float amountEff = amount * smoothstep(0.0, 0.9 * uFp.y, -fd);
-    float halo = fd > 0.0 ? exp(-fd / (0.45 * uFp.y)) : 1.0;
-    float ridgeDot = step(0.3, ridge) * step(w, amountEff);
-    float looseDot = step(amountEff, w) * step(h1, 0.72 * halo);
-    float present = max(ridgeDot, looseDot);
-    float rad = 0.36 + 0.03 * h2.x;
-    float aa = 0.75 * cells / m;
-    dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * present;
-    lum = 0.97 + 0.03 * h2.y;
-  } else {
-    // ---- background: coarse lattice displaced by the wave field
-    float cells = max(uLookA, 20.0);
-    float e = 0.004;
-    vec2 nrm = vec2(glyphDist(q + vec2(e, 0.0)) - d, glyphDist(q + vec2(0.0, e)) - d);
-    nrm /= max(length(nrm), 1e-5);
-    float sp = max(uLookB, 0.01);
-    float dn = d + 0.008 * snoise(vec3(q * 3.0, t * 0.2));
-    float th = 6.2831853 * (dn / sp - t * uDrift * 6.0);
-    float ringK = uIntroS.x >= 1.0 ? 1.0 : smoothstep(0.3, 0.6, uIntroS.x);   // early on the dots are just scattered
-    float reach = 1.0 - smoothstep(0.0, 0.9, dn);
-    float amp = 0.045 * sp * (0.35 + 0.65 * reach) * (0.8 + 0.2 * sin(t * 1.3)) * ringK;
-    vec2 u = q - nrm * amp * cos(th);
-    vec2 p = u * cells;
-    vec2 ip = floor(p);
-    vec2 fp = fract(p);
-    float h1 = hash(ip + uSeed);
-    vec2 h2 = hash22(ip + 7.7 + uSeed);
-    float depth = hash(ip + 31.7 + uSeed);
-    vec2 o = 0.5 + 0.2 * sin(6.2831853 * h2 + t * (0.3 + uDrift * 3.0) + vec2(0.0, 1.7));
-    float ring = smoothstep(0.0, 1.0, sin(th)) * ringK;
-    float gap = mix(1.0, smoothstep(0.004, 0.03, dn), ringK);
-    float dens = (0.34 + 0.5 * ring) * mix(0.3, 1.0, gap);
-    float rad = (0.15 + 0.05 * h2.x) * (0.9 + 0.2 * ring) * (0.65 + 0.7 * depth);
-    float aa = 0.75 * cells / m;
-    // intro: the dot field fades in dot by dot
-    float bgApp = min(1.3, max(uIntroS.x - 0.03, 0.0) / 0.4 * 1.3);
-    float appear = smoothstep(h1 * 0.85, h1 * 0.85 + 0.15, bgApp);
-    dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * step(h1, dens) * appear;
-    lum = (0.4 + 0.6 * ring) * (0.55 + 0.45 * reach) * (0.4 + 0.6 * depth);
+// ---- look 5: particle waves. A lattice of particles, moved by a separate pass (particleFragmentShader):
+// a wave runs away from the letter edges, bunching particles into rings that wrap around the letters;
+// nearby particles are drawn in towards the letters and a slow flow carries them around. Here each
+// particle is drawn where that pass left it.
+vec3 lookParticles(vec2 q) {
+  float cells = uPGrid.z;
+  vec2 origin = vec2(-uPGrid.w * 0.5, -0.5) - 1.0 / cells;
+  ivec2 base = ivec2(floor((q - origin) * cells));
+  ivec2 dims = ivec2(uPGrid.xy);
+  float px = 1.0 / min(uRes.x, uRes.y);
+  float best = 0.0;
+  for (int j = -2; j <= 2; j++) {
+    for (int i = -2; i <= 2; i++) {
+      ivec2 ij = base + ivec2(i, j);
+      if (ij.x < 0 || ij.y < 0 || ij.x >= dims.x || ij.y >= dims.y) continue;
+      vec4 pr = texelFetch(uParticles, ij, 0);
+      float r = 0.17 * uLineW * pr.w / cells;
+      float cov = 1.0 - smoothstep(r - px * 0.8, r + px * 0.8, length(q - pr.xy));
+      best = max(best, cov * pr.z);
+    }
   }
-  return mix(uPaper, uIndex, dotM * lum);
+  return mix(uPaper, uIndex, best);
 }
 
 void main() {
@@ -438,7 +377,7 @@ void main() {
   else if (uLook == 2) col = lookBands(H);
   else if (uLook == 3) col = lookMosaic(q, d);
   else if (uLook == 4) col = lookGrid(q, H);
-  else if (uLook == 5) col = lookStipple(q);
+  else if (uLook == 5) col = lookParticles(q);
   else col = lookTopo(d, H);
 
   if (uLook != 0) {
@@ -638,5 +577,68 @@ void main() {
     c = mix(c, o.rgb, o.a);
   }
   gl_FragColor = vec4(c, 1.0);
+}
+`;
+
+// Particle waves, simulation pass: one texel per particle. Output: displaced position (xy), brightness (z), size (w).
+export const particleFragmentShader = /* glsl */ `
+precision highp float;
+
+uniform vec4 uPGrid;       // lattice width, height, particles per short side, aspect
+uniform float uLookB;      // wavelength
+uniform float uLookC;      // wave push
+uniform float uLookD;      // pull towards the letters
+uniform float uDrift;
+uniform float uSeed;
+uniform float uFreq;
+uniform float uWarp;
+${glyphGLSL}
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+vec2 hash22(vec2 p) {
+  return vec2(hash(p), hash(p + 19.19));
+}
+
+void main() {
+  vec2 ij = floor(gl_FragCoord.xy);
+  float cells = uPGrid.z;
+  float cell = 1.0 / cells;
+  vec2 origin = vec2(-uPGrid.w * 0.5, -0.5) - cell;
+  vec2 h = hash22(ij + uSeed * 7.0);
+  vec2 x0 = origin + (ij + 0.5 + (h - 0.5) * 0.7) * cell;
+
+  float d = glyphDist(x0);
+  float e = 0.004;
+  vec2 n = vec2(glyphDist(x0 + vec2(e, 0.0)) - d, glyphDist(x0 + vec2(0.0, e)) - d);
+  n /= max(length(n), 1e-5);
+  vec2 tang = vec2(-n.y, n.x);
+
+  // travelling wave away from the letter edges (it carries on, as rings, inside the letters too)
+  float lam = max(uLookB, 0.01);
+  float t = uTime * uDrift * 6.0;
+  float dn = d + 0.01 * snoise(vec3(x0 * 3.0, uTime * 0.2));
+  float th = 6.2831853 * (dn / lam - t);
+  float reach = 1.0 - smoothstep(0.0, 1.0, max(dn, 0.0));
+  float inside = step(d, 0.0);
+  float push = uLookC * lam * 0.16 * (0.3 + 0.7 * reach) * mix(1.0, 0.08, inside);   // particles inside the letters stay put
+  vec2 disp = n * cos(th) * push;                                        // bunches particles into rings
+  disp += tang * sin(0.5 * th + uTime * 0.3) * push * 0.6;              // and slides them around the letters
+
+  // pull towards the letters: nearby particles drift to the edge, so the letters gather a denser swarm
+  float pull = uLookD * (1.0 - smoothstep(0.0, 0.2, d)) * step(0.0, d);
+  disp -= n * d * pull * 0.6;
+
+  // slow generative flow, different per seed
+  vec3 fp = vec3(x0 * uFreq * 0.7 + uSeed, uTime * 0.08);
+  disp += vec2(snoise(fp), snoise(fp + vec3(11.0, 5.0, 0.0))) * uWarp * cell * 1.5;
+
+  disp *= min(1.0, 1.8 * cell / max(length(disp), 1e-6));
+  float crest = smoothstep(0.0, 1.0, sin(th));
+  float bright = mix(0.3 + 0.7 * (0.35 * crest + 0.65 * (0.4 + 0.6 * reach) * crest), 1.0, inside);
+  bright *= 0.6 + 0.4 * hash(ij + 3.1);
+  float size = 0.7 + 0.6 * hash(ij + 8.8);
+  gl_FragColor = vec4(x0 + disp, bright, size);
 }
 `;

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import GUI from 'lil-gui';
 import {
   blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, compositeFragmentShader, fragmentShader,
-  postFragmentShader, vertexShader,
+  particleFragmentShader, postFragmentShader, vertexShader,
 } from './shader';
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
 import { EffectsPanel } from './effectsUI';
@@ -62,9 +62,9 @@ const uniforms = {
   uLookB: { value: params.lookB },
   uLookC: { value: params.lookC },
   uLookD: { value: params.lookD },
-  uFp: { value: new THREE.Vector4() },
-  uIntroS: { value: new THREE.Vector3(1, 1000, 1) },
   uHeightTex: { value: null as THREE.Texture | null },
+  uParticles: { value: null as THREE.Texture | null },
+  uPGrid: { value: new THREE.Vector4(1, 1, 100, 1) },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
   uWobble: { value: params.wobble },
@@ -305,8 +305,39 @@ function renderHeightField(): void {
   uniforms.uHeightTex.value = heightRT.texture;
 }
 
+// Particle waves: a small pass moves one particle per lattice texel; the look shader then draws them.
+let particleRT: THREE.WebGLRenderTarget | null = null;
+let particleMat: THREE.ShaderMaterial | null = null;
+function renderParticles(): void {
+  const res = uniforms.uRes.value;
+  const cells = Math.max(20, Math.round(params.lookA));
+  const aspect = res.x / res.y;
+  const nx = Math.ceil(cells * aspect) + 3;
+  const ny = cells + 3;
+  if (!particleRT || particleRT.width !== nx || particleRT.height !== ny) {
+    particleRT?.dispose();
+    particleRT = new THREE.WebGLRenderTarget(nx, ny, {
+      type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+    });
+  }
+  uniforms.uPGrid.value.set(nx, ny, cells, aspect);
+  particleMat ??= new THREE.ShaderMaterial({
+    uniforms: {
+      uPGrid: uniforms.uPGrid, uLookB: uniforms.uLookB, uLookC: uniforms.uLookC, uLookD: uniforms.uLookD,
+      uDrift: uniforms.uDrift, uSeed: uniforms.uSeed, uFreq: uniforms.uFreq, uWarp: uniforms.uWarp,
+      ...glyphUniforms,
+    },
+    vertexShader,
+    fragmentShader: particleFragmentShader,
+  });
+  uniforms.uParticles.value = blankTex; // never sample the texture we are rendering into
+  fxPass(particleMat, particleRT);
+  uniforms.uParticles.value = particleRT.texture;
+}
+
 function renderFrame(): void {
   if (params.look === 1 && floatRT) renderHeightField();
+  if (params.look === 5) renderParticles();
   renderer.setRenderTarget(sceneRT);
   renderer.render(scene, camera);
   const stacked = runEffects();
@@ -422,11 +453,6 @@ function glyphMatrices(g: GlyphDef) {
   return { f, inv: [f[3] / det, -f[1] / det, -f[2] / det, f[0] / det] };
 }
 
-const smooth = (a: number, b: number, x: number) => {
-  const t = Math.min(Math.max((x - a) / (b - a), 0), 1);
-  return t * t * (3 - 2 * t);
-};
-
 function syncFillColor(): void {
   uniforms.uFillCol.value.set(params.fillAuto ? palettes[params.palette].index : params.fillColor);
 }
@@ -440,21 +466,10 @@ function syncUniforms(): void {
   const n = Math.min(params.glyphs.length, MAX_GLYPHS);
   uniforms.uCount.value = n;
 
-  // Stipple intro: one progress value drives the camera pull-back (from ~1.8x), the sweeping reveal front
-  // and the dot fade-in. At progress 1 everything is at rest, which is the plain look.
-  const g0 = params.glyphs[0];
-  const b0 = store.bounds[0];
-  const p = params.look === 5 ? Math.min(Math.max(params.introT, 0), 1) : 1;
-  const zoom = p >= 1 ? 1 : 1 + 0.8 * (1 - smooth(0.3, 0.8, p));
-  const width0 = (b0.u1 - b0.u0) * g0.size * g0.stretch;
-  const xL0 = g0.posX + (b0.u0 - 0.5) * g0.size * g0.stretch;
-  const cy0 = g0.posY + ((b0.v0 + b0.v1) / 2 - 0.5) * g0.size;
-  const pivotX = xL0 + 0.78 * width0;
-  const pivotY = g0.posY;
   for (let i = 0; i < n; i++) {
     const g = params.glyphs[i];
-    gPos[i].set(pivotX + (g.posX - pivotX) * zoom, pivotY + (g.posY - pivotY) * zoom);
-    gSize[i] = g.size * zoom;
+    gPos[i].set(g.posX, g.posY);
+    gSize[i] = g.size;
     const m = glyphMatrices(g).inv;
     gXform[i].set(m[0], m[1], m[2], m[3]);
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
@@ -464,17 +479,6 @@ function syncUniforms(): void {
   uniforms.uLookB.value = params.lookB;
   uniforms.uLookC.value = params.lookC;
   uniforms.uLookD.value = params.lookD;
-  {
-    // stipple: split the first glyph into letter cells, one fingerprint per cell
-    const letters = Math.max(1, Array.from(g0.text.replace(/\s/g, '')).length);
-    const width = width0 * zoom;
-    const x0 = pivotX + (xL0 - pivotX) * zoom;
-    const pitch = width / letters;
-    uniforms.uFp.value.set(x0, pitch, letters, pivotY + (cy0 - pivotY) * zoom);
-    const reveal = Math.min(Math.max((p - 0.37) / 0.51, 0), 1);
-    const front = p >= 1 ? 1e3 : x0 - 0.8 * pitch + reveal * (width + 1.6 * pitch);
-    uniforms.uIntroS.value.set(p, front, zoom);
-  }
   uniforms.uBlend.value = params.shapeBlend;
   uniforms.uSoft.value = params.shapeSoft;
   uniforms.uGrow.value = params.shapeGrow;
@@ -671,7 +675,7 @@ gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
 
 // How the landscape is drawn. The three sliders mean different things per look.
-const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, Stipple: 5 } as const;
+const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, 'Particle waves': 5 } as const;
 type LookKey = 'lookA' | 'lookB' | 'lookC' | 'lookD';
 interface LookSlider { label: string; min: number; max: number; step: number; value: number }
 const lookDefs: Record<number, (LookSlider | null)[]> = {
@@ -696,10 +700,10 @@ const lookDefs: Record<number, (LookSlider | null)[]> = {
     null,
   ],
   5: [
-    { label: 'background dots', min: 40, max: 220, step: 1, value: 95 },
-    { label: 'ripple spacing', min: 0.02, max: 0.2, step: 0.002, value: 0.08 },
-    { label: 'fingerprint ridge size', min: 0.004, max: 0.03, step: 0.0005, value: 0.011 },
-    { label: 'dots → fingerprint', min: 0, max: 1, step: 0.005, value: 0.78 },
+    { label: 'particles', min: 40, max: 260, step: 1, value: 130 },
+    { label: 'wavelength', min: 0.03, max: 0.25, step: 0.002, value: 0.09 },
+    { label: 'wave push', min: 0, max: 2, step: 0.01, value: 0.9 },
+    { label: 'pull to letters', min: 0, max: 1, step: 0.01, value: 0.5 },
   ],
 };
 
@@ -720,39 +724,6 @@ function relabelLook(resetValues: boolean): void {
 }
 lookCtl.onChange(() => relabelLook(true));
 relabelLook(false);
-
-// Intro sequence (Stipple): plays black -> drifting dots -> camera pull-back -> letters sweep in and lock into fingerprints
-let introPlaying = false;
-let introHold = 0;
-const gIntro = gLook.addFolder('Intro sequence (stipple)');
-const introCtl = gIntro.add(params, 'introT', 0, 1, 0.001).name('progress');
-gIntro.add(params, 'introDur', 4, 40, 0.5).name('duration (s)');
-gIntro.add(params, 'introLoop').name('loop');
-gIntro
-  .add(
-    {
-      play() {
-        if (params.look !== 5) lookCtl.setValue(5);
-        if (params.introT >= 1) params.introT = 0;
-        introPlaying = true;
-        introHold = 0;
-      },
-    },
-    'play',
-  )
-  .name('▶ play intro');
-gIntro
-  .add(
-    {
-      stop() {
-        introPlaying = false;
-        params.introT = 1;
-        refreshGui();
-      },
-    },
-    'stop',
-  )
-  .name('■ stop (show finished)');
 
 const gShape = gui.addFolder('Letter shape');
 gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('blend letters together');
@@ -1253,20 +1224,6 @@ function frame(): void {
     const t = Math.min((performance.now() - morphStart[i]) / (MORPH_SECONDS * 1000), 1);
     gMorph[i] = t * t * (3 - 2 * t); // smoothstep ease
     if (t >= 1) morphStart[i] = -1;
-  }
-
-  if (introPlaying) {
-    if (introHold > 0) {
-      introHold -= dt;
-      if (introHold <= 0) params.introT = 0;
-    } else {
-      params.introT = Math.min(1, params.introT + dt / Math.max(params.introDur, 1));
-      if (params.introT >= 1) {
-        if (params.introLoop) introHold = 2;
-        else introPlaying = false;
-      }
-    }
-    introCtl.updateDisplay();
   }
 
   syncUniforms();

@@ -18,15 +18,11 @@ export interface Params {
   effects: EffectLayer[]; // stacked effect layers, applied in order
   mode: number; // 0 offset lines, 1 mountain, 2 basin
   // how the landscape is drawn
-  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 stipple
+  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 particle waves
   lookA: number; // look-specific sliders; their meaning depends on `look`
   lookB: number;
   lookC: number;
   lookD: number;
-  // stipple intro timeline
-  introT: number; // 0 = black start, 1 = finished
-  introDur: number; // seconds for a full play
-  introLoop: boolean;
   // letter shape (all glyphs)
   shapeBlend: number; // how much neighbouring letters fuse together
   shapeSoft: number; // corner softening
@@ -82,9 +78,6 @@ export const defaultParams: Params = {
   lookB: 0,
   lookC: 0,
   lookD: 0,
-  introT: 1,
-  introDur: 19,
-  introLoop: false,
   shapeBlend: 0,
   shapeSoft: 0,
   shapeGrow: 0,
@@ -257,10 +250,10 @@ export const presets: Record<string, PresetData> = {
     "caption": "LINES OF EQUAL HEIGHT TRACE THE QUIET SHAPE OF THE LAND BENEATH THE LETTER"
   },
   // Looks: the same landscape and letters, drawn four other ways. Pick one, then tune the sliders.
-  'Look: Stipple': {
-    glyphs: [{ text: 'PLUR1BUS', font: 'Archivo Black', size: 2.2, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 0.78, text2: '', morph: 0 }],
-    look: 5, lookA: 95, lookB: 0.08, lookC: 0.011, lookD: 0.78, mode: 1, palette: 'White dots', fill: 0, rough: 0.2, freq: 1.8,
-    warp: 0.3, influence: 0.7, slope: 0.5, wobble: 0.2, drift: 0.06, grain: 0, shapeGrow: 0.012, animate: true, details: false,
+  'Look: Particle waves': {
+    glyphs: [{ text: 'Flow', font: 'Archivo Black', size: 1.5, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 0.85, text2: '', morph: 0 }],
+    look: 5, lookA: 130, lookB: 0.09, lookC: 0.9, lookD: 0.5, mode: 1, palette: 'White dots', fill: 0, rough: 0.2, freq: 2, warp: 0.5,
+    influence: 0.7, slope: 0.5, wobble: 0.2, drift: 0.07, lineWidth: 1.1, grain: 0, animate: true, details: false,
   },
   'Look: Ridgeline': {
     glyphs: [{ text: 'Hub', font: 'Inter', size: 1.3, posX: 0, posY: -0.02, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
