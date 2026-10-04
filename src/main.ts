@@ -63,6 +63,7 @@ const uniforms = {
   uLookC: { value: params.lookC },
   uLookD: { value: params.lookD },
   uFp: { value: new THREE.Vector4() },
+  uIntroS: { value: new THREE.Vector3(1, 1000, 1) },
   uHeightTex: { value: null as THREE.Texture | null },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
@@ -421,6 +422,11 @@ function glyphMatrices(g: GlyphDef) {
   return { f, inv: [f[3] / det, -f[1] / det, -f[2] / det, f[0] / det] };
 }
 
+const smooth = (a: number, b: number, x: number) => {
+  const t = Math.min(Math.max((x - a) / (b - a), 0), 1);
+  return t * t * (3 - 2 * t);
+};
+
 function syncFillColor(): void {
   uniforms.uFillCol.value.set(params.fillAuto ? palettes[params.palette].index : params.fillColor);
 }
@@ -433,10 +439,22 @@ function syncUniforms(): void {
   uniforms.uMode.value = params.mode;
   const n = Math.min(params.glyphs.length, MAX_GLYPHS);
   uniforms.uCount.value = n;
+
+  // Stipple intro: one progress value drives the camera pull-back (from ~1.8x), the sweeping reveal front
+  // and the dot fade-in. At progress 1 everything is at rest, which is the plain look.
+  const g0 = params.glyphs[0];
+  const b0 = store.bounds[0];
+  const p = params.look === 5 ? Math.min(Math.max(params.introT, 0), 1) : 1;
+  const zoom = p >= 1 ? 1 : 1 + 0.8 * (1 - smooth(0.3, 0.8, p));
+  const width0 = (b0.u1 - b0.u0) * g0.size * g0.stretch;
+  const xL0 = g0.posX + (b0.u0 - 0.5) * g0.size * g0.stretch;
+  const cy0 = g0.posY + ((b0.v0 + b0.v1) / 2 - 0.5) * g0.size;
+  const pivotX = xL0 + 0.78 * width0;
+  const pivotY = g0.posY;
   for (let i = 0; i < n; i++) {
     const g = params.glyphs[i];
-    gPos[i].set(g.posX, g.posY);
-    gSize[i] = g.size;
+    gPos[i].set(pivotX + (g.posX - pivotX) * zoom, pivotY + (g.posY - pivotY) * zoom);
+    gSize[i] = g.size * zoom;
     const m = glyphMatrices(g).inv;
     gXform[i].set(m[0], m[1], m[2], m[3]);
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
@@ -448,16 +466,14 @@ function syncUniforms(): void {
   uniforms.uLookD.value = params.lookD;
   {
     // stipple: split the first glyph into letter cells, one fingerprint per cell
-    const g0 = params.glyphs[0];
-    const b0 = store.bounds[0];
     const letters = Math.max(1, Array.from(g0.text.replace(/\s/g, '')).length);
-    const width = (b0.u1 - b0.u0) * g0.size * g0.stretch;
-    uniforms.uFp.value.set(
-      g0.posX + (b0.u0 - 0.5) * g0.size * g0.stretch,
-      width / letters,
-      letters,
-      g0.posY + ((b0.v0 + b0.v1) / 2 - 0.5) * g0.size,
-    );
+    const width = width0 * zoom;
+    const x0 = pivotX + (xL0 - pivotX) * zoom;
+    const pitch = width / letters;
+    uniforms.uFp.value.set(x0, pitch, letters, pivotY + (cy0 - pivotY) * zoom);
+    const reveal = Math.min(Math.max((p - 0.37) / 0.51, 0), 1);
+    const front = p >= 1 ? 1e3 : x0 - 0.8 * pitch + reveal * (width + 1.6 * pitch);
+    uniforms.uIntroS.value.set(p, front, zoom);
   }
   uniforms.uBlend.value = params.shapeBlend;
   uniforms.uSoft.value = params.shapeSoft;
@@ -704,6 +720,39 @@ function relabelLook(resetValues: boolean): void {
 }
 lookCtl.onChange(() => relabelLook(true));
 relabelLook(false);
+
+// Intro sequence (Stipple): plays black -> drifting dots -> camera pull-back -> letters sweep in and lock into fingerprints
+let introPlaying = false;
+let introHold = 0;
+const gIntro = gLook.addFolder('Intro sequence (stipple)');
+const introCtl = gIntro.add(params, 'introT', 0, 1, 0.001).name('progress');
+gIntro.add(params, 'introDur', 4, 40, 0.5).name('duration (s)');
+gIntro.add(params, 'introLoop').name('loop');
+gIntro
+  .add(
+    {
+      play() {
+        if (params.look !== 5) lookCtl.setValue(5);
+        if (params.introT >= 1) params.introT = 0;
+        introPlaying = true;
+        introHold = 0;
+      },
+    },
+    'play',
+  )
+  .name('▶ play intro');
+gIntro
+  .add(
+    {
+      stop() {
+        introPlaying = false;
+        params.introT = 1;
+        refreshGui();
+      },
+    },
+    'stop',
+  )
+  .name('■ stop (show finished)');
 
 const gShape = gui.addFolder('Letter shape');
 gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('blend letters together');
@@ -1204,6 +1253,20 @@ function frame(): void {
     const t = Math.min((performance.now() - morphStart[i]) / (MORPH_SECONDS * 1000), 1);
     gMorph[i] = t * t * (3 - 2 * t); // smoothstep ease
     if (t >= 1) morphStart[i] = -1;
+  }
+
+  if (introPlaying) {
+    if (introHold > 0) {
+      introHold -= dt;
+      if (introHold <= 0) params.introT = 0;
+    } else {
+      params.introT = Math.min(1, params.introT + dt / Math.max(params.introDur, 1));
+      if (params.introT >= 1) {
+        if (params.introLoop) introHold = 2;
+        else introPlaying = false;
+      }
+    }
+    introCtl.updateDisplay();
   }
 
   syncUniforms();

@@ -152,6 +152,7 @@ uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
 uniform float uLookD;
+uniform vec3 uIntroS;      // stipple intro: progress (1 = finished), reveal front x, camera zoom
 uniform vec4 uFp;          // stipple: first letter-cell left edge, cell width, letter count, row centre (world units)
 uniform sampler2D uHeightTex; // height field, half resolution (ridgeline only)
 
@@ -337,9 +338,10 @@ vec3 lookGrid(vec2 q, float H) {
   return mix(col, uIndex, major);
 }
 
-// ---- look 5: stipple. Letters are made of tiny dots packed into fingerprint ridges (or loose dots),
-// clipped by the letter outline; the background is a sparser dot lattice pushed into rings by a wave
-// travelling away from the letters (like particles displaced by the gradient of a radial sine field).
+// ---- look 5: stipple. Letters are tiny dots packed into fingerprint ridges (or loose dots), clipped by the
+// letter outline; the background is a sparse dot lattice pushed into rings by a wave travelling away from
+// the letters. An intro timeline (uIntroS) plays it from black: dots appear, the camera pulls back and a
+// front sweeps along the word, dots locking into ridges behind it.
 vec3 lookStipple(vec2 q) {
   float m = min(uRes.x, uRes.y);
   float t = uTime;
@@ -349,15 +351,16 @@ vec3 lookStipple(vec2 q) {
 
   if (d < 0.0) {
     // ---- inside a letter: fine lattice, each letter gets its own fingerprint
+    float zoom = uIntroS.z;
     float ridgeSp = max(uLookC, 0.003);
-    float cells = 3.2 / ridgeSp;
+    float cells = 4.0 / ridgeSp;
     vec2 p = q * cells;
     vec2 ip = floor(p);
     vec2 fp = fract(p);
     float h1 = hash(ip + uSeed);
     vec2 h2 = hash22(ip + 3.3 + uSeed);
     float w = hash(ip + 9.1 + uSeed);
-    vec2 o = 0.5 + (h2 - 0.5) * 0.45;
+    vec2 o = 0.5 + (h2 - 0.5) * 0.24;
     vec2 cq = (ip + o) / cells;
 
     float n = max(uFp.z, 1.0);
@@ -370,15 +373,19 @@ vec3 lookStipple(vec2 q) {
     float sa = sin(ang);
     vec2 lr = vec2(ca * l.x + sa * l.y, -sa * l.x + ca * l.y);
     float asp = 0.55 + 0.9 * hash(vec2(c, 5.1));
-    float phase = length(lr * vec2(1.0, asp)) / ridgeSp + 0.45 * snoise(vec3(cq * 5.0, 2.7 + t * 0.05));
+    float phase = length(lr * vec2(1.0, asp)) / (ridgeSp * zoom) + 0.45 * snoise(vec3(cq * 5.0 / zoom, 2.7 + t * 0.05));
     float ridge = 0.5 + 0.5 * cos(6.2831853 * phase);
 
     // letters resolve from loose dots into ridges one after another (the first letter last)
     float amount = clamp((uLookD * (n + 1.0) - (n - 1.0 - c)) * 0.5, 0.0, 1.0);
-    float ridgeDot = step(0.38, ridge) * step(w, amount);
-    float looseDot = step(amount, w) * step(h1, 0.72);
+    // intro: loose dots gather ahead of the sweeping front, ridges lock in just behind it
+    float fd = q.x - uIntroS.y;
+    float amountEff = amount * smoothstep(0.0, 0.9 * uFp.y, -fd);
+    float halo = fd > 0.0 ? exp(-fd / (0.45 * uFp.y)) : 1.0;
+    float ridgeDot = step(0.3, ridge) * step(w, amountEff);
+    float looseDot = step(amountEff, w) * step(h1, 0.72 * halo);
     float present = max(ridgeDot, looseDot);
-    float rad = 0.4 + 0.07 * h2.x;
+    float rad = 0.36 + 0.03 * h2.x;
     float aa = 0.75 * cells / m;
     dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * present;
     lum = 0.97 + 0.03 * h2.y;
@@ -391,23 +398,27 @@ vec3 lookStipple(vec2 q) {
     float sp = max(uLookB, 0.01);
     float dn = d + 0.008 * snoise(vec3(q * 3.0, t * 0.2));
     float th = 6.2831853 * (dn / sp - t * uDrift * 6.0);
+    float ringK = uIntroS.x >= 1.0 ? 1.0 : smoothstep(0.3, 0.6, uIntroS.x);   // early on the dots are just scattered
     float reach = 1.0 - smoothstep(0.0, 0.9, dn);
-    float amp = 0.045 * sp * (0.35 + 0.65 * reach) * (0.8 + 0.2 * sin(t * 1.3));
-    float jac = max(0.5, 1.0 + amp * 6.2831853 / sp * sin(th));    // local compression of the lattice
+    float amp = 0.045 * sp * (0.35 + 0.65 * reach) * (0.8 + 0.2 * sin(t * 1.3)) * ringK;
     vec2 u = q - nrm * amp * cos(th);
     vec2 p = u * cells;
     vec2 ip = floor(p);
     vec2 fp = fract(p);
     float h1 = hash(ip + uSeed);
     vec2 h2 = hash22(ip + 7.7 + uSeed);
-    vec2 o = 0.5 + 0.3 * sin(6.2831853 * h2 + t * (0.3 + uDrift * 3.0) + vec2(0.0, 1.7));
-    float ring = smoothstep(0.0, 1.0, sin(th));
-    float gap = smoothstep(0.004, 0.03, dn);
+    float depth = hash(ip + 31.7 + uSeed);
+    vec2 o = 0.5 + 0.2 * sin(6.2831853 * h2 + t * (0.3 + uDrift * 3.0) + vec2(0.0, 1.7));
+    float ring = smoothstep(0.0, 1.0, sin(th)) * ringK;
+    float gap = mix(1.0, smoothstep(0.004, 0.03, dn), ringK);
     float dens = (0.34 + 0.5 * ring) * mix(0.3, 1.0, gap);
-    float rad = (0.17 + 0.07 * h2.x) * (0.85 + 0.25 * ring);
+    float rad = (0.15 + 0.05 * h2.x) * (0.9 + 0.2 * ring) * (0.65 + 0.7 * depth);
     float aa = 0.75 * cells / m;
-    dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * step(h1, dens);
-    lum = (0.4 + 0.6 * ring) * (0.55 + 0.45 * reach) * (0.8 + 0.2 * h2.y);
+    // intro: the dot field fades in dot by dot
+    float bgApp = min(1.3, max(uIntroS.x - 0.03, 0.0) / 0.4 * 1.3);
+    float appear = smoothstep(h1 * 0.85, h1 * 0.85 + 0.15, bgApp);
+    dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * step(h1, dens) * appear;
+    lum = (0.4 + 0.6 * ring) * (0.55 + 0.45 * reach) * (0.4 + 0.6 * depth);
   }
   return mix(uPaper, uIndex, dotM * lum);
 }
