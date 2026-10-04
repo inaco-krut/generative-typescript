@@ -248,6 +248,14 @@ export const presets: Record<string, PresetData> = {
     "caption": "LINES OF EQUAL HEIGHT TRACE THE QUIET SHAPE OF THE LAND BENEATH THE LETTER"
   },
   // Looks: the same landscape and letters, drawn four other ways. Pick one, then tune the sliders.
+  'Stipple ripples': {
+    glyphs: [{ text: 'Waves', font: 'Inter', size: 1.7, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 0.9, text2: '', morph: 0 }],
+    effects: [
+      { id: 'stipple', on: true, opacity: 1, blend: 'normal', p: [1.15, 0.07, 0.35, 0.8, 0.7, 1, 0.25, 0], c1: '#ffffff', c2: '#04050a' },
+    ],
+    mode: 1, palette: 'Midnight', fill: 0, rough: 0.2, freq: 1.8, warp: 0.3, influence: 0.6, slope: 0.5, wobble: 0.2,
+    shapeSoft: 0, shapeGrow: 0, animate: true, details: false,
+  },
   'Look: Ridgeline': {
     glyphs: [{ text: 'Hub', font: 'Inter', size: 1.3, posX: 0, posY: -0.02, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
     look: 1, lookA: 64, lookB: 1.8, lookC: 0.8, mode: 1, palette: 'Survey', fill: 0.9, fillColor: '#1d1a16', fillAuto: false,
