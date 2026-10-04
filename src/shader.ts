@@ -697,10 +697,19 @@ void main() {
 }
 `;
 
-export const flatFragmentShader = /* glsl */ `
+// Particle sea backdrop: paper colour with the letters filled in underneath the particles.
+export const seaBackdropFragmentShader = /* glsl */ `
 precision highp float;
-uniform vec3 uColor;
+uniform vec2 uRes;
+uniform vec3 uPaper;
+uniform vec3 uFillCol;
+uniform float uFill;
+${glyphGLSL}
 void main() {
-  gl_FragColor = vec4(uColor, 1.0);
+  vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
+  float d = glyphDist(q);
+  float fd = max(fwidth(d), 1e-6);
+  float inside = 1.0 - smoothstep(-fd, fd, d);
+  gl_FragColor = vec4(mix(uPaper, uFillCol, inside * uFill), 1.0);
 }
 `;

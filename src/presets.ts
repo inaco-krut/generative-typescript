@@ -252,7 +252,7 @@ export const presets: Record<string, PresetData> = {
   // Looks: the same landscape and letters, drawn four other ways. Pick one, then tune the sliders.
   'Look: Particle sea': {
     glyphs: [{ text: 'Tide', font: 'Archivo Black', size: 1.5, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 0.9, text2: '', morph: 0 }],
-    look: 5, lookA: 170, lookB: 0.55, lookC: 0.6, lookD: 0.55, mode: 1, palette: 'White dots', fill: 0, freq: 1.6, warp: 0.5,
+    look: 5, lookA: 170, lookB: 0.55, lookC: 0.6, lookD: 0.55, mode: 1, palette: 'White dots', fill: 0.9, fillAuto: false, fillColor: '#4a4d5a', freq: 1.6, warp: 0.5,
     influence: 0.3, drift: 0.07, lineWidth: 1.1, grain: 0, animate: true, details: false,
   },
   'Look: Ridgeline': {

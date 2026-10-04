@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import GUI from 'lil-gui';
 import {
   blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, compositeFragmentShader, fragmentShader,
-  flatFragmentShader, particleInitFragmentShader, particlePointFragmentShader, particlePointVertexShader,
+  seaBackdropFragmentShader, particleInitFragmentShader, particlePointFragmentShader, particlePointVertexShader,
   particleSimFragmentShader, postFragmentShader, vertexShader,
 } from './shader';
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
@@ -315,7 +315,13 @@ let seaPoints: THREE.Points | null = null;
 const seaScene = new THREE.Scene();
 const seaBg = new THREE.Mesh(
   new THREE.PlaneGeometry(2, 2),
-  new THREE.ShaderMaterial({ uniforms: { uColor: { value: uniforms.uPaper.value } }, vertexShader, fragmentShader: flatFragmentShader, depthTest: false, depthWrite: false }),
+  new THREE.ShaderMaterial({
+    uniforms: { uRes: uniforms.uRes, uPaper: uniforms.uPaper, uFillCol: uniforms.uFillCol, uFill: uniforms.uFill, ...glyphUniforms },
+    vertexShader,
+    fragmentShader: seaBackdropFragmentShader,
+    depthTest: false,
+    depthWrite: false,
+  }),
 );
 seaBg.renderOrder = 0;
 seaBg.frustumCulled = false;
@@ -806,7 +812,11 @@ function relabelLook(resetValues: boolean): void {
     c.updateDisplay();
   });
 }
-lookCtl.onChange(() => relabelLook(true));
+lookCtl.onChange(() => {
+  relabelLook(true);
+  if (params.look === 5 && params.fill < 0.3) params.fill = 0.9; // the sea draws the letters through the letter fill
+  refreshGui();
+});
 relabelLook(false);
 
 const gShape = gui.addFolder('Letter shape');
@@ -1083,11 +1093,16 @@ function startThumbs(): void {
   uniforms.uRes.value.set(w, h);
   uniforms.uMaskOn.value = 0;
   syncUniforms();
+  const pxBefore = pointsMat.uniforms.uPx.value as number;
   // keep the look faithful at thumbnail size: lines and grain are measured in pixels
   uniforms.uLineW.value = Math.max(0.35, (uniforms.uLineW.value * h) / prevRes.y);
   uniforms.uGrain.value = 0;
   renderer.setRenderTarget(tinyRT[0]);
-  renderer.render(scene, camera);
+  if (params.look === 5) {
+    pointsMat.uniforms.uPx.value = Math.max(1, (pxBefore * h) / prevRes.y);
+    renderer.render(seaScene, camera);
+    pointsMat.uniforms.uPx.value = pxBefore;
+  } else renderer.render(scene, camera);
   renderer.setRenderTarget(null);
   uniforms.uRes.value.copy(prevRes);
   uniforms.uMaskOn.value = maskOn;
