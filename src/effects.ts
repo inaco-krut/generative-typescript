@@ -43,65 +43,6 @@ const P = (label: string, min: number, max: number, value: number, step = 0.01):
 
 export const effectDefs: EffectDef[] = [
   {
-    id: 'stipple',
-    name: 'Stipple ripples',
-    blurb: 'White dots in pulsing ripples that resolve into the letters, with fingerprint ridges inside.',
-    params: [
-      P('dot spacing', 0.6, 5, 1.15, 0.05),
-      P('ripple spacing', 0.02, 0.2, 0.07, 0.002),
-      P('ripple speed', 0, 1.5, 0.35, 0.01),
-      P('ripple strength', 0, 1, 0.8),
-      P('fingerprint', 0, 1, 0.7),
-      P('letter formation', 0, 1, 1),
-      P('glow', 0, 1, 0.25),
-      P('show map behind', 0, 1, 0),
-    ],
-    c1: { label: 'dots', value: '#ffffff' },
-    c2: { label: 'background', value: '#04050a' },
-    glsl: `
-float cell = max(P0 * 0.01 * uRes.y, 3.0);
-float rowH = cell * 0.8660254;
-vec2 g = vec2(gl_FragCoord.x / cell, gl_FragCoord.y / rowH);
-float row = floor(g.y);
-float shift = 0.5 * mod(row, 2.0);
-g.x -= shift;
-vec2 id = vec2(floor(g.x), row);
-vec2 f = fract(g) - 0.5;
-vec2 center = (id + 0.5 + vec2(shift, 0.0)) * vec2(cell, rowH);
-vec2 cuv = center / uRes;
-vec2 wq = worldQ(cuv);
-
-float d = glyphDist(wq);
-// ripples drift outward from the letters; a little noise keeps them watery
-float dn = d + 0.012 * snoise(vec3(wq * 3.0, uTime * 0.25));
-float phase = max(dn, 0.0) / max(P1, 1e-3) - uTime * P2;
-float wave = 0.5 + 0.5 * cos(6.2831853 * phase);
-float reach = 1.0 - smoothstep(0.0, 0.75, max(dn, 0.0));
-
-// outside the letters: dots swell and shrink with the passing waves
-float gap = smoothstep(0.006, 0.05, dn); // a quiet dark margin keeps the letters readable
-float rOut = (0.1 + 0.4 * wave * P3 * (0.35 + 0.65 * reach)) * mix(0.25, 1.0, gap);
-float lumOut = (0.3 + 0.7 * wave * (0.4 + 0.6 * reach)) * mix(0.3, 1.0, gap);
-
-// inside the letters: full dots shaped into fingerprint ridges that follow the letterform
-float ridge = -d / max(P1 * 0.28, 1e-3) + 0.45 * snoise(vec3(wq * 7.0, 3.1));
-float fp = 0.5 + 0.5 * cos(6.2831853 * ridge);
-float rIn = mix(0.5, 0.3 + 0.2 * fp, P4);
-float lumIn = mix(1.0, 0.72 + 0.28 * fp, P4);
-
-float fd = max(fwidth(d), 1e-5);
-float inside = (1.0 - smoothstep(-fd - 0.0035, fd + 0.0035, d)) * P5;
-float r = mix(rOut, rIn, inside);
-float lum = mix(lumOut, lumIn, inside);
-
-float dd = length(vec2(f.x, f.y * 0.8660254));
-float aa = max(fwidth(dd), 1e-3);
-float dot = 1.0 - smoothstep(r - aa, r + aa, dd);
-float halo = exp(-max(dd - r, 0.0) * 6.0) * P6 * 0.35 * lum;
-vec3 bg = mix(C2, src, P7);
-return bg + C1 * (dot * lum + halo * (1.0 - dot)) * (1.0 - P7 * 0.5);`,
-  },
-  {
     id: 'halftone',
     name: 'Halftone',
     blurb: 'Rotated dot screen; darker areas get bigger dots.',

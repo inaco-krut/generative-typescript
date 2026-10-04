@@ -147,7 +147,7 @@ uniform float uFill;
 uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
 uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
-uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid
+uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 stipple
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
@@ -335,6 +335,46 @@ vec3 lookGrid(vec2 q, float H) {
   return mix(col, uIndex, major);
 }
 
+// ---- look 5: stipple. Same-size dots whose density draws pulsing ripples that resolve into letters
+// filled with fingerprint ridges (or solid dots). Dots are jittered and drift, like a particle swarm.
+vec3 lookStipple(vec2 q) {
+  float cells = max(uLookA, 20.0);
+  vec2 p = q * cells;
+  vec2 ip = floor(p);
+  vec2 fp = fract(p);
+  float h1 = hash(ip + uSeed);
+  vec2 h2 = hash22(ip + 7.7 + uSeed);
+  vec2 o = 0.5 + 0.22 * sin(6.2831853 * h2 + uTime * (0.3 + uDrift * 3.0) + vec2(0.0, 1.7)); // each dot drifts in its cell
+  vec2 cq = (ip + o) / cells;                                                              // dot centre, world space
+  float dc = glyphDist(cq);
+
+  // outside the letters: ripples travelling away from them, pulsing
+  float dn = dc + 0.01 * snoise(vec3(cq * 3.0, uTime * 0.2));
+  float ph = max(dn, 0.0) / max(uLookB, 0.01) - uTime * uDrift * 6.0;
+  float wave = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
+  float pulse = 0.8 + 0.2 * sin(uTime * 1.3);
+  float reach = 1.0 - smoothstep(0.0, 0.8, max(dn, 0.0));
+  float gap = smoothstep(0.006, 0.05, dn);                   // quiet margin keeps the letters readable
+  float densOut = (0.03 + 0.97 * wave * pulse) * (0.25 + 0.75 * reach) * gap;
+
+  // inside the letters: fingerprint ridges following the letterform, or solid dots
+  float ridgeSp = 3.4 / cells;
+  float ridge = -dc / ridgeSp + 0.5 * snoise(vec3(cq * 6.0, 3.1));
+  float rid = smoothstep(0.3, 0.72, 0.5 + 0.5 * cos(6.2831853 * ridge));
+  float densIn = mix(0.08 + 0.92 * rid, 1.0, uLookC);
+
+  bool inside = dc < 0.0;
+  float dens = (inside ? densIn : densOut) * 1.07;
+  float lum = inside ? 1.0 : 0.45 + 0.55 * wave * pulse;
+
+  float present = 1.0 - smoothstep(dens - 0.07, dens, h1);   // dots fade in and out with the local density
+  float r = (0.17 + 0.07 * h2.x) * (0.55 + 0.45 * present);
+  float dd = length(fp - o);
+  float aa = max(fwidth(dd), 1e-3);
+  float m = (1.0 - smoothstep(r - aa, r + aa, dd)) * present;
+  return mix(uPaper, uIndex, m * lum * (0.8 + 0.2 * h2.y));
+}
+
 void main() {
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
 
@@ -350,6 +390,7 @@ void main() {
   else if (uLook == 2) col = lookBands(H);
   else if (uLook == 3) col = lookMosaic(q, d);
   else if (uLook == 4) col = lookGrid(q, H);
+  else if (uLook == 5) col = lookStipple(q);
   else col = lookTopo(d, H);
 
   if (uLook != 0) {

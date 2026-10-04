@@ -639,7 +639,7 @@ gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
 
 // How the landscape is drawn. The three sliders mean different things per look.
-const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4 } as const;
+const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, Stipple: 5 } as const;
 interface LookSlider { label: string; min: number; max: number; step: number; value: number }
 const lookDefs: Record<number, (LookSlider | null)[]> = {
   0: [null, null, null],
@@ -658,6 +658,11 @@ const lookDefs: Record<number, (LookSlider | null)[]> = {
     { label: 'grid cells', min: 6, max: 90, step: 0.5, value: 28 },
     { label: 'lens strength', min: 0, max: 14, step: 0.05, value: 6 },
     null,
+  ],
+  5: [
+    { label: 'dot density', min: 40, max: 260, step: 1, value: 110 },
+    { label: 'ripple spacing', min: 0.02, max: 0.2, step: 0.002, value: 0.075 },
+    { label: 'fingerprint ↔ solid', min: 0, max: 1, step: 0.01, value: 0 },
   ],
 };
 
