@@ -61,6 +61,8 @@ const uniforms = {
   uLookA: { value: params.lookA },
   uLookB: { value: params.lookB },
   uLookC: { value: params.lookC },
+  uLookD: { value: params.lookD },
+  uFp: { value: new THREE.Vector4() },
   uHeightTex: { value: null as THREE.Texture | null },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
@@ -443,6 +445,20 @@ function syncUniforms(): void {
   uniforms.uLookA.value = params.lookA;
   uniforms.uLookB.value = params.lookB;
   uniforms.uLookC.value = params.lookC;
+  uniforms.uLookD.value = params.lookD;
+  {
+    // stipple: split the first glyph into letter cells, one fingerprint per cell
+    const g0 = params.glyphs[0];
+    const b0 = store.bounds[0];
+    const letters = Math.max(1, Array.from(g0.text.replace(/\s/g, '')).length);
+    const width = (b0.u1 - b0.u0) * g0.size * g0.stretch;
+    uniforms.uFp.value.set(
+      g0.posX + (b0.u0 - 0.5) * g0.size * g0.stretch,
+      width / letters,
+      letters,
+      g0.posY + ((b0.v0 + b0.v1) / 2 - 0.5) * g0.size,
+    );
+  }
   uniforms.uBlend.value = params.shapeBlend;
   uniforms.uSoft.value = params.shapeSoft;
   uniforms.uGrow.value = params.shapeGrow;
@@ -640,35 +656,41 @@ gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
 
 // How the landscape is drawn. The three sliders mean different things per look.
 const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, Stipple: 5 } as const;
+type LookKey = 'lookA' | 'lookB' | 'lookC' | 'lookD';
 interface LookSlider { label: string; min: number; max: number; step: number; value: number }
 const lookDefs: Record<number, (LookSlider | null)[]> = {
-  0: [null, null, null],
+  0: [null, null, null, null],
   1: [
     { label: 'rows', min: 16, max: 160, step: 1, value: 64 },
     { label: 'relief height', min: 0, max: 4, step: 0.01, value: 1.8 },
     { label: 'letter lift', min: 0, max: 2, step: 0.01, value: 0.8 },
+    null,
   ],
-  2: [{ label: 'band thickness', min: 0.1, max: 0.9, step: 0.01, value: 0.5 }, null, null],
+  2: [{ label: 'band thickness', min: 0.1, max: 0.9, step: 0.01, value: 0.5 }, null, null, null],
   3: [
     { label: 'tile count', min: 6, max: 80, step: 0.5, value: 22 },
     { label: 'density near letters', min: 0, max: 5, step: 0.05, value: 1.8 },
     { label: 'grout width', min: 0.2, max: 4, step: 0.05, value: 1.5 },
+    null,
   ],
   4: [
     { label: 'grid cells', min: 6, max: 90, step: 0.5, value: 28 },
     { label: 'lens strength', min: 0, max: 14, step: 0.05, value: 6 },
     null,
+    null,
   ],
   5: [
-    { label: 'dot density', min: 40, max: 260, step: 1, value: 110 },
-    { label: 'ripple spacing', min: 0.02, max: 0.2, step: 0.002, value: 0.075 },
-    { label: 'fingerprint ↔ solid', min: 0, max: 1, step: 0.01, value: 0 },
+    { label: 'background dots', min: 40, max: 220, step: 1, value: 95 },
+    { label: 'ripple spacing', min: 0.02, max: 0.2, step: 0.002, value: 0.08 },
+    { label: 'fingerprint ridge size', min: 0.004, max: 0.03, step: 0.0005, value: 0.011 },
+    { label: 'dots → fingerprint', min: 0, max: 1, step: 0.005, value: 0.78 },
   ],
 };
 
 const gLook = gui.addFolder('Look');
 const lookCtl = gLook.add(params, 'look', LOOKS).name('draw the landscape as');
-const lookSliders = (['lookA', 'lookB', 'lookC'] as const).map((key) => gLook.add(params, key, 0, 1, 0.01));
+const lookKeys: LookKey[] = ['lookA', 'lookB', 'lookC', 'lookD'];
+const lookSliders = lookKeys.map((key) => gLook.add(params, key, 0, 1, 0.01));
 function relabelLook(resetValues: boolean): void {
   const defs = lookDefs[params.look] ?? lookDefs[0];
   lookSliders.forEach((c, i) => {
@@ -676,7 +698,7 @@ function relabelLook(resetValues: boolean): void {
     c.show(!!d);
     if (!d) return;
     c.name(d.label).min(d.min).max(d.max).step(d.step);
-    if (resetValues) (params as unknown as Record<string, number>)[(['lookA', 'lookB', 'lookC'] as const)[i]] = d.value;
+    if (resetValues) params[lookKeys[i]] = d.value;
     c.updateDisplay();
   });
 }

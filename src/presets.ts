@@ -22,6 +22,7 @@ export interface Params {
   lookA: number; // look-specific sliders; their meaning depends on `look`
   lookB: number;
   lookC: number;
+  lookD: number;
   // letter shape (all glyphs)
   shapeBlend: number; // how much neighbouring letters fuse together
   shapeSoft: number; // corner softening
@@ -76,6 +77,7 @@ export const defaultParams: Params = {
   lookA: 0,
   lookB: 0,
   lookC: 0,
+  lookD: 0,
   shapeBlend: 0,
   shapeSoft: 0,
   shapeGrow: 0,
@@ -249,9 +251,9 @@ export const presets: Record<string, PresetData> = {
   },
   // Looks: the same landscape and letters, drawn four other ways. Pick one, then tune the sliders.
   'Look: Stipple': {
-    glyphs: [{ text: 'Plur', font: 'Inter', size: 1.7, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 0.9, text2: '', morph: 0 }],
-    look: 5, lookA: 110, lookB: 0.075, lookC: 0, mode: 1, palette: 'White dots', fill: 0, rough: 0.2, freq: 1.8, warp: 0.3,
-    influence: 0.7, slope: 0.5, wobble: 0.2, drift: 0.06, grain: 0, animate: true, details: false,
+    glyphs: [{ text: 'PLUR1BUS', font: 'Archivo Black', size: 1.8, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 0.72, text2: '', morph: 0 }],
+    look: 5, lookA: 95, lookB: 0.08, lookC: 0.011, lookD: 0.78, mode: 1, palette: 'White dots', fill: 0, rough: 0.2, freq: 1.8,
+    warp: 0.3, influence: 0.7, slope: 0.5, wobble: 0.2, drift: 0.06, grain: 0, shapeGrow: 0.012, animate: true, details: false,
   },
   'Look: Ridgeline': {
     glyphs: [{ text: 'Hub', font: 'Inter', size: 1.3, posX: 0, posY: -0.02, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],

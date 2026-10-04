@@ -151,6 +151,8 @@ uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosa
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
+uniform float uLookD;
+uniform vec4 uFp;          // stipple: first letter-cell left edge, cell width, letter count, row centre (world units)
 uniform sampler2D uHeightTex; // height field, half resolution (ridgeline only)
 
 uniform vec3 uPaper;
@@ -335,44 +337,79 @@ vec3 lookGrid(vec2 q, float H) {
   return mix(col, uIndex, major);
 }
 
-// ---- look 5: stipple. Same-size dots whose density draws pulsing ripples that resolve into letters
-// filled with fingerprint ridges (or solid dots). Dots are jittered and drift, like a particle swarm.
+// ---- look 5: stipple. Letters are made of tiny dots packed into fingerprint ridges (or loose dots),
+// clipped by the letter outline; the background is a sparser dot lattice pushed into rings by a wave
+// travelling away from the letters (like particles displaced by the gradient of a radial sine field).
 vec3 lookStipple(vec2 q) {
-  float cells = max(uLookA, 20.0);
-  vec2 p = q * cells;
-  vec2 ip = floor(p);
-  vec2 fp = fract(p);
-  float h1 = hash(ip + uSeed);
-  vec2 h2 = hash22(ip + 7.7 + uSeed);
-  vec2 o = 0.5 + 0.22 * sin(6.2831853 * h2 + uTime * (0.3 + uDrift * 3.0) + vec2(0.0, 1.7)); // each dot drifts in its cell
-  vec2 cq = (ip + o) / cells;                                                              // dot centre, world space
-  float dc = glyphDist(cq);
+  float m = min(uRes.x, uRes.y);
+  float t = uTime;
+  float d = glyphDist(q);
+  float lum = 1.0;
+  float dotM = 0.0;
 
-  // outside the letters: ripples travelling away from them, pulsing
-  float dn = dc + 0.01 * snoise(vec3(cq * 3.0, uTime * 0.2));
-  float ph = max(dn, 0.0) / max(uLookB, 0.01) - uTime * uDrift * 6.0;
-  float wave = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
-  float pulse = 0.8 + 0.2 * sin(uTime * 1.3);
-  float reach = 1.0 - smoothstep(0.0, 0.8, max(dn, 0.0));
-  float gap = smoothstep(0.006, 0.05, dn);                   // quiet margin keeps the letters readable
-  float densOut = (0.03 + 0.97 * wave * pulse) * (0.25 + 0.75 * reach) * gap;
+  if (d < 0.0) {
+    // ---- inside a letter: fine lattice, each letter gets its own fingerprint
+    float ridgeSp = max(uLookC, 0.003);
+    float cells = 3.2 / ridgeSp;
+    vec2 p = q * cells;
+    vec2 ip = floor(p);
+    vec2 fp = fract(p);
+    float h1 = hash(ip + uSeed);
+    vec2 h2 = hash22(ip + 3.3 + uSeed);
+    float w = hash(ip + 9.1 + uSeed);
+    vec2 o = 0.5 + (h2 - 0.5) * 0.45;
+    vec2 cq = (ip + o) / cells;
 
-  // inside the letters: fingerprint ridges following the letterform, or solid dots
-  float ridgeSp = 3.4 / cells;
-  float ridge = -dc / ridgeSp + 0.5 * snoise(vec3(cq * 6.0, 3.1));
-  float rid = smoothstep(0.3, 0.72, 0.5 + 0.5 * cos(6.2831853 * ridge));
-  float densIn = mix(0.08 + 0.92 * rid, 1.0, uLookC);
+    float n = max(uFp.z, 1.0);
+    float c = clamp(floor((cq.x - uFp.x) / max(uFp.y, 1e-4)), 0.0, n - 1.0);
+    vec2 hc = hash22(vec2(c, 17.0 + uSeed));
+    float ang = hc.x * 3.14159265;
+    vec2 core = vec2((hc.x - 0.5) * 0.6 * uFp.y, (hc.y - 0.5) * 1.1 * uFp.y);
+    vec2 l = cq - vec2(uFp.x + (c + 0.5) * uFp.y, uFp.w) - core;
+    float ca = cos(ang);
+    float sa = sin(ang);
+    vec2 lr = vec2(ca * l.x + sa * l.y, -sa * l.x + ca * l.y);
+    float asp = 0.55 + 0.9 * hash(vec2(c, 5.1));
+    float phase = length(lr * vec2(1.0, asp)) / ridgeSp + 0.45 * snoise(vec3(cq * 5.0, 2.7 + t * 0.05));
+    float ridge = 0.5 + 0.5 * cos(6.2831853 * phase);
 
-  bool inside = dc < 0.0;
-  float dens = (inside ? densIn : densOut) * 1.07;
-  float lum = inside ? 1.0 : 0.45 + 0.55 * wave * pulse;
-
-  float present = 1.0 - smoothstep(dens - 0.07, dens, h1);   // dots fade in and out with the local density
-  float r = (0.17 + 0.07 * h2.x) * (0.55 + 0.45 * present);
-  float dd = length(fp - o);
-  float aa = max(fwidth(dd), 1e-3);
-  float m = (1.0 - smoothstep(r - aa, r + aa, dd)) * present;
-  return mix(uPaper, uIndex, m * lum * (0.8 + 0.2 * h2.y));
+    // letters resolve from loose dots into ridges one after another (the first letter last)
+    float amount = clamp((uLookD * (n + 1.0) - (n - 1.0 - c)) * 0.5, 0.0, 1.0);
+    float ridgeDot = step(0.38, ridge) * step(w, amount);
+    float looseDot = step(amount, w) * step(h1, 0.72);
+    float present = max(ridgeDot, looseDot);
+    float rad = 0.4 + 0.07 * h2.x;
+    float aa = 0.75 * cells / m;
+    dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * present;
+    lum = 0.97 + 0.03 * h2.y;
+  } else {
+    // ---- background: coarse lattice displaced by the wave field
+    float cells = max(uLookA, 20.0);
+    float e = 0.004;
+    vec2 nrm = vec2(glyphDist(q + vec2(e, 0.0)) - d, glyphDist(q + vec2(0.0, e)) - d);
+    nrm /= max(length(nrm), 1e-5);
+    float sp = max(uLookB, 0.01);
+    float dn = d + 0.008 * snoise(vec3(q * 3.0, t * 0.2));
+    float th = 6.2831853 * (dn / sp - t * uDrift * 6.0);
+    float reach = 1.0 - smoothstep(0.0, 0.9, dn);
+    float amp = 0.045 * sp * (0.35 + 0.65 * reach) * (0.8 + 0.2 * sin(t * 1.3));
+    float jac = max(0.5, 1.0 + amp * 6.2831853 / sp * sin(th));    // local compression of the lattice
+    vec2 u = q - nrm * amp * cos(th);
+    vec2 p = u * cells;
+    vec2 ip = floor(p);
+    vec2 fp = fract(p);
+    float h1 = hash(ip + uSeed);
+    vec2 h2 = hash22(ip + 7.7 + uSeed);
+    vec2 o = 0.5 + 0.3 * sin(6.2831853 * h2 + t * (0.3 + uDrift * 3.0) + vec2(0.0, 1.7));
+    float ring = smoothstep(0.0, 1.0, sin(th));
+    float gap = smoothstep(0.004, 0.03, dn);
+    float dens = (0.34 + 0.5 * ring) * mix(0.3, 1.0, gap);
+    float rad = (0.17 + 0.07 * h2.x) * (0.85 + 0.25 * ring);
+    float aa = 0.75 * cells / m;
+    dotM = (1.0 - smoothstep(rad - aa, rad + aa, length(fp - o))) * step(h1, dens);
+    lum = (0.4 + 0.6 * ring) * (0.55 + 0.45 * reach) * (0.8 + 0.2 * h2.y);
+  }
+  return mix(uPaper, uIndex, dotM * lum);
 }
 
 void main() {
