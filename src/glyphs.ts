@@ -8,6 +8,10 @@ const N = SDF_SIZE;
 export interface Bounds { u0: number; u1: number; v0: number; v1: number }
 export const defaultBounds: Bounds = { u0: 0.25, u1: 0.75, v0: 0.25, v1: 0.75 };
 
+export function unionBounds(a: Bounds, b: Bounds): Bounds {
+  return { u0: Math.min(a.u0, b.u0), u1: Math.max(a.u1, b.u1), v0: Math.min(a.v0, b.v0), v1: Math.max(a.v1, b.v1) };
+}
+
 export function boundsOf(sdf: Float32Array): Bounds | null {
   let c0 = N, c1 = -1, r0 = N, r1 = -1;
   for (let r = 0; r < N; r++) {
@@ -70,6 +74,16 @@ export class GlyphStore {
     else this.write(this.fromData, layer, sdf);
     this.write(this.toData, layer, sdf);
     this.sdf[layer] = sdf;
+    this.bounds[layer] = bounds;
+    this.fromTex.needsUpdate = true;
+    this.toTex.needsUpdate = true;
+  }
+
+  /** Put two shapes in a layer so they can be scrubbed between by hand. */
+  setPair(layer: number, a: Float32Array, b: Float32Array, bounds: Bounds): void {
+    this.write(this.fromData, layer, a);
+    this.write(this.toData, layer, b);
+    this.sdf[layer] = a;
     this.bounds[layer] = bounds;
     this.fromTex.needsUpdate = true;
     this.toTex.needsUpdate = true;

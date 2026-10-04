@@ -1,70 +1,7 @@
 const MAX_GLYPHS_GLSL = 8;
 
-// All glyphs combined: distance to the nearest one, in short-side units (positive outside).
-const glyphGLSL = /* glsl */ `
-#define MAXG ${MAX_GLYPHS_GLSL}
-uniform highp sampler2DArray uFromArr;
-uniform highp sampler2DArray uToArr;
-uniform int uCount;
-uniform vec2 uGPos[MAXG];
-uniform float uGSize[MAXG];
-uniform float uGMorph[MAXG];
-
-float glyphDist(vec2 q) {
-  float best = 1e3;
-  for (int i = 0; i < MAXG; i++) {
-    if (i >= uCount) break;
-    float sz = uGSize[i];
-    vec2 uv = (q - uGPos[i]) / sz + 0.5;
-    vec2 c = clamp(uv, 0.0, 1.0);
-    vec3 p = vec3(c, float(i));
-    float d = mix(texture(uFromArr, p).r, texture(uToArr, p).r, uGMorph[i]);
-    d += length(uv - c); // continue the field past the texture border
-    best = min(best, d * sz);
-  }
-  return best;
-}
-`;
-
-export const vertexShader = /* glsl */ `
-void main() {
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`;
-
-export const fragmentShader = /* glsl */ `
-precision highp float;
-
-uniform vec2 uRes;
-uniform float uTime;
-${glyphGLSL}
-uniform int uMode;          // 0 offset lines, 1 mountain, 2 basin
-uniform float uInfluence;   // how far the glyph reshapes the land
-uniform float uSlope;       // glyph height gradient
-uniform float uWobble;      // terrain amplitude kept at the glyph edge (0..1)
-uniform float uRough;
-uniform float uFreq;
-uniform float uWarp;
-uniform float uDrift;
-uniform float uSeed;
-uniform float uSpacing;
-uniform float uLineW;
-uniform float uTint;
-uniform float uShade;
-uniform float uGrain;
-uniform float uFill;
-uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
-uniform float uMaskOn;
-uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
-
-uniform vec3 uPaper;
-uniform vec3 uInk;
-uniform vec3 uIndex;
-uniform vec3 uFillCol;
-uniform vec3 uLow;
-uniform vec3 uMid;
-uniform vec3 uHigh;
-
+// simplex noise, used by the terrain and by the letter warp
+const noiseGLSL = /* glsl */ `
 // --- simplex noise 3D (Ashima / Ian McEwan, MIT) ---
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -113,6 +50,112 @@ float snoise(vec3 v) {
   return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
 }
 
+`;
+
+// All glyphs combined: distance to the nearest one, in short-side units (positive outside).
+// Letters can be moved, rotated, skewed, stretched, softened, grown, warped and smoothly fused.
+export const glyphGLSL = /* glsl */ `
+#define MAXG ${MAX_GLYPHS_GLSL}
+uniform float uTime;
+uniform highp sampler2DArray uFromArr;
+uniform highp sampler2DArray uToArr;
+uniform int uCount;
+uniform vec2 uGPos[MAXG];
+uniform float uGSize[MAXG];
+uniform float uGMorph[MAXG];
+uniform vec4 uGXform[MAXG];   // inverse linear map (rotate/skew/stretch), row-major
+uniform float uBlend;         // smooth-union radius between letters
+uniform float uSoft;          // corner softening
+uniform float uGrow;          // letter weight: >0 fatter, <0 thinner (short-side units)
+uniform float uShapeWarp;     // noise warp of the letterforms
+uniform float uShapeWarpScale;
+uniform float uShapeWarpSpeed;
+${noiseGLSL}
+
+float sampleGlyph(int i, vec2 c) {
+  vec3 p = vec3(c, float(i));
+  return mix(texture(uFromArr, p).r, texture(uToArr, p).r, uGMorph[i]);
+}
+
+float glyphOne(int i, vec2 q) {
+  float sz = uGSize[i];
+  vec4 m = uGXform[i];
+  vec2 pp = (q - uGPos[i]) / sz;
+  vec2 uv = vec2(m.x * pp.x + m.y * pp.y, m.z * pp.x + m.w * pp.y) + 0.5;
+  vec2 c = clamp(uv, 0.0, 1.0);
+  float d;
+  if (uSoft > 0.001) {
+    // averaging the distance field rounds corners and fills thin gaps
+    float r = uSoft * 0.04;
+    d = 0.4 * sampleGlyph(i, c)
+      + 0.15 * (sampleGlyph(i, clamp(c + vec2(r, 0.0), 0.0, 1.0)) + sampleGlyph(i, clamp(c - vec2(r, 0.0), 0.0, 1.0))
+              + sampleGlyph(i, clamp(c + vec2(0.0, r), 0.0, 1.0)) + sampleGlyph(i, clamp(c - vec2(0.0, r), 0.0, 1.0)));
+  } else {
+    d = sampleGlyph(i, c);
+  }
+  d += length(uv - c); // continue the field past the texture border
+  return d * sz;
+}
+
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+
+float glyphDist(vec2 q) {
+  if (uShapeWarp > 0.001) {
+    vec3 p = vec3(q * uShapeWarpScale + 3.7, uTime * uShapeWarpSpeed);
+    q += uShapeWarp * 0.05 * vec2(snoise(p), snoise(p + vec3(7.1, 3.3, 0.0)));
+  }
+  float k = uBlend * 0.25;
+  float best = 1e3;
+  for (int i = 0; i < MAXG; i++) {
+    if (i >= uCount) break;
+    float d = glyphOne(i, q);
+    best = k > 0.0001 ? smin(best, d, k) : min(best, d);
+  }
+  return best - uGrow;
+}
+`;
+
+export const vertexShader = /* glsl */ `
+void main() {
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+export const fragmentShader = /* glsl */ `
+precision highp float;
+
+uniform vec2 uRes;
+${glyphGLSL}
+uniform int uMode;          // 0 offset lines, 1 mountain, 2 basin
+uniform float uInfluence;   // how far the glyph reshapes the land
+uniform float uSlope;       // glyph height gradient
+uniform float uWobble;      // terrain amplitude kept at the glyph edge (0..1)
+uniform float uRough;
+uniform float uFreq;
+uniform float uWarp;
+uniform float uDrift;
+uniform float uSeed;
+uniform float uSpacing;
+uniform float uLineW;
+uniform float uTint;
+uniform float uShade;
+uniform float uGrain;
+uniform float uFill;
+uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
+uniform float uMaskOn;
+uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
+
+uniform vec3 uPaper;
+uniform vec3 uInk;
+uniform vec3 uIndex;
+uniform vec3 uFillCol;
+uniform vec3 uLow;
+uniform vec3 uMid;
+uniform vec3 uHigh;
+
 float fbm(vec3 p) {
   float a = 0.5;
   float s = 0.0;
@@ -152,7 +195,7 @@ void main() {
   float amp = mix(1.0, uWobble, w);
   float H = terrain(q) * uRough * amp + g * uSlope * w;
   if (uOutputH > 0.5) {
-    gl_FragColor = vec4(H, 0.0, 0.0, 1.0);
+    gl_FragColor = vec4(H, d, 0.0, 1.0); // height + distance to the glyphs
     return;
   }
 

@@ -4,11 +4,23 @@ export interface GlyphDef {
   size: number;
   posX: number; // offset from the centre, in short-side units (+x right)
   posY: number; // (+y up)
+  rot: number; // rotation in degrees
+  skew: number; // horizontal shear
+  stretch: number; // horizontal stretch
+  text2: string; // optional second shape to morph towards ('' = none)
+  morph: number; // 0..1 blend between text and text2
 }
 
 export interface Params {
   glyphs: GlyphDef[];
   mode: number; // 0 offset lines, 1 mountain, 2 basin
+  // letter shape (all glyphs)
+  shapeBlend: number; // how much neighbouring letters fuse together
+  shapeSoft: number; // corner softening
+  shapeGrow: number; // letter weight
+  shapeWarp: number; // noise warp of the letterforms
+  shapeWarpScale: number;
+  shapeWarpSpeed: number;
   influence: number;
   slope: number;
   wobble: number;
@@ -44,11 +56,19 @@ export interface Params {
   caption: string;
 }
 
-export const defaultGlyph: GlyphDef = { text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0 };
+export const defaultGlyph: GlyphDef = {
+  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0,
+};
 
 export const defaultParams: Params = {
   glyphs: [{ ...defaultGlyph }],
   mode: 0,
+  shapeBlend: 0,
+  shapeSoft: 0,
+  shapeGrow: 0,
+  shapeWarp: 0,
+  shapeWarpScale: 3,
+  shapeWarpSpeed: 0.15,
   influence: 0.3,
   slope: 1.0,
   wobble: 0.15,

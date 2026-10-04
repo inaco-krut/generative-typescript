@@ -3,13 +3,13 @@ import GUI from 'lil-gui';
 import {
   blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, fragmentShader, postFragmentShader, vertexShader,
 } from './shader';
-import { SDF_SIZE, renderGlyphSDF } from './glyph';
-import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds } from './glyphs';
+import { renderGlyphSDF } from './glyph';
+import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
 import { renderDetails } from './details';
 import {
-  builtinPresetNames, defaultGlyph, loadUserPresets, presets, resolvePreset, storeUserPresets, type Params,
+  builtinPresetNames, defaultGlyph, loadUserPresets, presets, resolvePreset, storeUserPresets, type GlyphDef, type Params,
 } from './presets';
 
 const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
@@ -20,6 +20,7 @@ const store = new GlyphStore();
 const gPos = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector2());
 const gSize: number[] = new Array(MAX_GLYPHS).fill(1);
 const gMorph: number[] = new Array(MAX_GLYPHS).fill(1);
+const gXform = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector4(1, 0, 0, 1));
 const morphStart: number[] = new Array(MAX_GLYPHS).fill(-1);
 const loadTokens: number[] = new Array(MAX_GLYPHS).fill(0);
 let activeIdx = 0; // glyph the panel edits
@@ -45,6 +46,13 @@ const uniforms = {
   uGPos: { value: gPos },
   uGSize: { value: gSize },
   uGMorph: { value: gMorph },
+  uGXform: { value: gXform },
+  uBlend: { value: params.shapeBlend },
+  uSoft: { value: params.shapeSoft },
+  uGrow: { value: params.shapeGrow },
+  uShapeWarp: { value: params.shapeWarp },
+  uShapeWarpScale: { value: params.shapeWarpScale },
+  uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
@@ -72,6 +80,15 @@ const uniforms = {
   uHigh: { value: color('#000') },
 };
 
+// everything the shared glyph shader code needs, handed to every pass that evaluates the letter shapes
+const glyphUniforms = {
+  uTime: uniforms.uTime,
+  uFromArr: uniforms.uFromArr, uToArr: uniforms.uToArr, uCount: uniforms.uCount,
+  uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform,
+  uBlend: uniforms.uBlend, uSoft: uniforms.uSoft, uGrow: uniforms.uGrow,
+  uShapeWarp: uniforms.uShapeWarp, uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
+};
+
 const material = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader });
 scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
 
@@ -95,12 +112,7 @@ const postUniforms = {
   uBlur: { value: params.blur },
   uGlass: { value: params.glass },
   uGlassLight: { value: params.glassLight },
-  uFromArr: uniforms.uFromArr,
-  uToArr: uniforms.uToArr,
-  uCount: uniforms.uCount,
-  uGPos: uniforms.uGPos,
-  uGSize: uniforms.uGSize,
-  uGMorph: uniforms.uGMorph,
+  ...glyphUniforms,
   uFill: uniforms.uFill,
 };
 const postScene = new THREE.Scene();
@@ -133,12 +145,7 @@ const fxMaterials = {
       uScene: { value: sceneRT.texture },
       uOverlay: { value: overlayTex },
       uOverlayOn: postUniforms.uOverlayOn,
-      uFromArr: uniforms.uFromArr,
-      uToArr: uniforms.uToArr,
-      uCount: uniforms.uCount,
-      uGPos: uniforms.uGPos,
-      uGSize: uniforms.uGSize,
-      uGMorph: uniforms.uGMorph,
+      ...glyphUniforms,
     },
     vertexShader,
     fragmentShader: blurDownFragmentShader,
@@ -219,27 +226,41 @@ let sdfVersion = 0;
 const MORPH_SECONDS = 0.9;
 const sdfCache = new Map<string, Float32Array>();
 
-/** (Re)build glyph `i`'s distance field from its text and font. */
-async function loadGlyph(i: number, morph: boolean): Promise<void> {
-  const g = params.glyphs[i];
-  if (!g) return;
-  const text = g.text || ' ';
-  const font = fonts.find((f) => f.family === g.font) ?? fonts[0];
-  const token = ++loadTokens[i];
-  await ensureFont(font, text);
-  if (token !== loadTokens[i] || !params.glyphs[i]) return; // superseded
-
+function sdfFor(font: FontDef, text: string): Float32Array {
   const key = `${font.family}|${text}`;
   let sdf = sdfCache.get(key);
   if (!sdf) {
     sdf = renderGlyphSDF(text, font);
     sdfCache.set(key, sdf);
-    if (sdfCache.size > 24) sdfCache.delete(sdfCache.keys().next().value as string);
+    if (sdfCache.size > 32) sdfCache.delete(sdfCache.keys().next().value as string);
   }
-  store.set(i, sdf, boundsOf(sdf) ?? { ...defaultBounds }, morph);
+  return sdf;
+}
+
+/** (Re)build glyph `i`'s distance field from its text and font. */
+async function loadGlyph(i: number, morph: boolean): Promise<void> {
+  const g = params.glyphs[i];
+  if (!g) return;
+  const text = g.text || ' ';
+  const text2 = (g.text2 ?? '').trim();
+  const font = fonts.find((f) => f.family === g.font) ?? fonts[0];
+  const token = ++loadTokens[i];
+  await ensureFont(font, text + text2);
+  if (token !== loadTokens[i] || !params.glyphs[i]) return; // superseded
+
+  const sdf = sdfFor(font, text);
+  const bounds = boundsOf(sdf) ?? { ...defaultBounds };
+  if (text2) {
+    // two shapes scrubbed by hand with the morph slider
+    const sdf2 = sdfFor(font, text2);
+    store.setPair(i, sdf, sdf2, unionBounds(bounds, boundsOf(sdf2) ?? bounds));
+    morphStart[i] = -1;
+  } else {
+    store.set(i, sdf, bounds, morph);
+    gMorph[i] = morph ? 0 : 1;
+    morphStart[i] = morph ? performance.now() : -1;
+  }
   sdfVersion++;
-  gMorph[i] = morph ? 0 : 1;
-  morphStart[i] = morph ? performance.now() : -1;
 }
 
 /** Reload every glyph; layers beyond the glyph count are emptied. */
@@ -269,6 +290,18 @@ function applyPalette(): void {
   document.body.style.background = p.paper;
 }
 
+/** Forward (local -> world) and inverse linear maps for a glyph's rotation, skew and stretch. */
+function glyphMatrices(g: GlyphDef) {
+  const t = (g.rot * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const k = g.skew;
+  const st = g.stretch;
+  const f = [c * st, c * k - s, s * st, s * k + c]; // R * K * S
+  const det = f[0] * f[3] - f[1] * f[2] || 1;
+  return { f, inv: [f[3] / det, -f[1] / det, -f[2] / det, f[0] / det] };
+}
+
 function syncFillColor(): void {
   uniforms.uFillCol.value.set(params.fillAuto ? palettes[params.palette].index : params.fillColor);
 }
@@ -285,7 +318,16 @@ function syncUniforms(): void {
     const g = params.glyphs[i];
     gPos[i].set(g.posX, g.posY);
     gSize[i] = g.size;
+    const m = glyphMatrices(g).inv;
+    gXform[i].set(m[0], m[1], m[2], m[3]);
+    if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
   }
+  uniforms.uBlend.value = params.shapeBlend;
+  uniforms.uSoft.value = params.shapeSoft;
+  uniforms.uGrow.value = params.shapeGrow;
+  uniforms.uShapeWarp.value = params.shapeWarp;
+  uniforms.uShapeWarpScale.value = params.shapeWarpScale;
+  uniforms.uShapeWarpSpeed.value = params.shapeWarpSpeed;
   uniforms.uInfluence.value = params.influence;
   uniforms.uSlope.value = params.slope;
   uniforms.uWobble.value = params.wobble;
@@ -381,6 +423,16 @@ const active = {
   set posX(v: number) { activeGlyph().posX = v; },
   get posY() { return activeGlyph().posY; },
   set posY(v: number) { activeGlyph().posY = v; },
+  get rot() { return activeGlyph().rot; },
+  set rot(v: number) { activeGlyph().rot = v; },
+  get skew() { return activeGlyph().skew; },
+  set skew(v: number) { activeGlyph().skew = v; },
+  get stretch() { return activeGlyph().stretch; },
+  set stretch(v: number) { activeGlyph().stretch = v; },
+  get text2() { return activeGlyph().text2; },
+  set text2(v: string) { activeGlyph().text2 = v; },
+  get morph() { return activeGlyph().morph; },
+  set morph(v: number) { activeGlyph().morph = v; },
 };
 
 const glyphLabel = (i: number) => {
@@ -422,6 +474,9 @@ const glyphActions = {
     const base = (resolvePreset(presets[presetState.preset] ?? userPresets[presetState.preset] ?? {})).glyphs[activeIdx];
     g.posX = 0;
     g.posY = 0;
+    g.rot = 0;
+    g.skew = 0;
+    g.stretch = 1;
     g.size = base?.size ?? defaultGlyph.size;
     refreshGui();
   },
@@ -449,11 +504,24 @@ const fontCtl = gGlyph.add(active, 'font', fonts.map((f) => f.family)).onChange(
 gGlyph.add(active, 'size', 0.2, 4, 0.01).name('glyph size');
 gGlyph.add(active, 'posX', -1.5, 1.5, 0.001).name('position x');
 gGlyph.add(active, 'posY', -1.5, 1.5, 0.001).name('position y');
-gGlyph.add(glyphActions, 'reset').name('reset position & size');
+gGlyph.add(active, 'rot', -180, 180, 0.5).name('rotation');
+gGlyph.add(active, 'skew', -0.8, 0.8, 0.005).name('skew');
+gGlyph.add(active, 'stretch', 0.3, 3, 0.01).name('stretch');
+gGlyph.add(glyphActions, 'reset').name('reset position, size & shape');
+gGlyph.add(active, 'text2').name('morph to (text)').onFinishChange(() => void loadGlyph(activeIdx, false));
+gGlyph.add(active, 'morph', 0, 1, 0.001).name('morph amount');
 gGlyph.add(params, 'mode', MODES).name('letters act as');
 gGlyph.add(params, 'influence', 0.02, 0.8, 0.01).name('influence radius');
 gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
+
+const gShape = gui.addFolder('Letter shape');
+gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('blend letters together');
+gShape.add(params, 'shapeSoft', 0, 1, 0.005).name('soften corners');
+gShape.add(params, 'shapeGrow', -0.05, 0.08, 0.001).name('weight (thin ↔ bold)');
+gShape.add(params, 'shapeWarp', 0, 1, 0.005).name('warp letterforms');
+gShape.add(params, 'shapeWarpScale', 0.5, 12, 0.05).name('warp scale');
+gShape.add(params, 'shapeWarpSpeed', 0, 1, 0.005).name('warp speed');
 
 const gTerrain = gui.addFolder('Terrain');
 gTerrain.add(params, 'rough', 0, 1.5, 0.01).name('roughness');
@@ -571,25 +639,6 @@ let pendingKey = '';
 let dueAt = 0;
 let computing = false;
 
-/** Distance from a canvas pixel to the nearest glyph edge, in canvas pixels (negative inside). */
-function glyphDistPx(cx: number, cy: number, W: number, H: number): number {
-  const n = SDF_SIZE;
-  const m = Math.min(W, H);
-  let best = 1e9;
-  params.glyphs.forEach((g, i) => {
-    const sdf = store.sdf[i];
-    if (!sdf) return;
-    const u = ((cx - W / 2) / m - g.posX) / g.size + 0.5;
-    const v = ((H / 2 - cy) / m - g.posY) / g.size + 0.5;
-    const cu = Math.min(Math.max(u, 0), 1);
-    const cv = Math.min(Math.max(v, 0), 1);
-    const col = Math.min(n - 1, Math.floor(cu * n));
-    const row = Math.min(n - 1, Math.floor((1 - cv) * n));
-    best = Math.min(best, (sdf[row * n + col] + Math.hypot(u - cu, v - cv)) * g.size * m);
-  });
-  return best;
-}
-
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(xs.length, 1);
 
 function hideDetails(): void {
@@ -637,14 +686,24 @@ async function computeDetails(key: string): Promise<void> {
     const buf = new Float32Array(gw * gh * 4);
     renderer.readRenderTargetPixels(fieldTarget, 0, 0, gw, gh, buf);
     const field = new Float32Array(gw * gh);
-    for (let i = 0; i < field.length; i++) field[i] = buf[i * 4];
+    const dist = new Float32Array(gw * gh); // distance to the glyphs, as drawn (blend, warp and all)
+    for (let i = 0; i < field.length; i++) {
+      field[i] = buf[i * 4];
+      dist[i] = buf[i * 4 + 1];
+    }
+    const m = Math.min(W, H);
+    const glyphDist = (x: number, y: number) => {
+      const gx = Math.min(gw - 1, Math.max(0, Math.floor((x / W) * gw)));
+      const gy = Math.min(gh - 1, Math.max(0, Math.floor(((H - y) / H) * gh)));
+      return dist[gy * gw + gx] * m;
+    };
 
     renderDetails(
       {
         field, gw, gh, W, H,
         cx: W / 2 + mean(params.glyphs.map((g) => g.posX)) * Math.min(W, H),
         cy: H / 2 - mean(params.glyphs.map((g) => g.posY)) * Math.min(W, H),
-        glyphDist: (x, y) => glyphDistPx(x, y, W, H) },
+        glyphDist },
       {
         labels: params.showLabels,
         spots: params.showSpots,
@@ -701,27 +760,42 @@ for (const corner of ['nw', 'ne', 'sw', 'se'] as const) {
   h.addEventListener('pointerdown', (e) => beginScale(e));
   selBox.appendChild(h);
 }
+const rotHandle = document.createElement('div');
+rotHandle.className = 'handle rot';
+rotHandle.title = 'drag to rotate (hold Shift to snap)';
+rotHandle.addEventListener('pointerdown', (e) => beginRotate(e));
+selBox.appendChild(rotHandle);
 document.body.appendChild(selBox);
 
 type Drag =
   | { kind: 'move'; idx: number; sx: number; sy: number; px: number; py: number }
-  | { kind: 'scale'; idx: number; cx: number; cy: number; d0: number; size0: number };
+  | { kind: 'scale'; idx: number; cx: number; cy: number; d0: number; size0: number }
+  | { kind: 'rotate'; idx: number; cx: number; cy: number; a0: number; rot0: number };
 let drag: Drag | null = null;
 const SEL_PAD = 8;
 
-/** Glyph `i`'s centre and bounding box in CSS px. */
+/** Glyph `i`'s centre and (axis-aligned) bounding box in CSS px, including rotation, skew and stretch. */
 function glyphBox(i: number) {
   const g = params.glyphs[i];
   const m = Math.min(window.innerWidth, window.innerHeight);
   const cx = window.innerWidth / 2 + g.posX * m;
   const cy = window.innerHeight / 2 - g.posY * m;
   const b = store.bounds[i];
+  const f = glyphMatrices(g).f;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const [u, v] of [[b.u0, b.v0], [b.u1, b.v0], [b.u1, b.v1], [b.u0, b.v1]]) {
+    const lx = (u - 0.5) * g.size;
+    const ly = (v - 0.5) * g.size;
+    xs.push(f[0] * lx + f[1] * ly);
+    ys.push(f[2] * lx + f[3] * ly);
+  }
   return {
     m, cx, cy,
-    x0: cx + (b.u0 - 0.5) * g.size * m,
-    x1: cx + (b.u1 - 0.5) * g.size * m,
-    y0: cy - (b.v1 - 0.5) * g.size * m,
-    y1: cy - (b.v0 - 0.5) * g.size * m,
+    x0: cx + Math.min(...xs) * m,
+    x1: cx + Math.max(...xs) * m,
+    y0: cy - Math.max(...ys) * m,
+    y1: cy - Math.min(...ys) * m,
   };
 }
 
@@ -732,6 +806,17 @@ function hitGlyph(x: number, y: number): number {
     if (x >= g.x0 - SEL_PAD && x <= g.x1 + SEL_PAD && y >= g.y0 - SEL_PAD && y <= g.y1 + SEL_PAD) return i;
   }
   return -1;
+}
+
+function beginRotate(e: PointerEvent): void {
+  if (selectedIdx < 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const g = glyphBox(selectedIdx);
+  drag = {
+    kind: 'rotate', idx: selectedIdx, cx: g.cx, cy: g.cy,
+    a0: Math.atan2(e.clientY - g.cy, e.clientX - g.cx), rot0: params.glyphs[selectedIdx].rot,
+  };
 }
 
 function beginScale(e: PointerEvent): void {
@@ -773,6 +858,12 @@ window.addEventListener('pointermove', (e) => {
     const m = Math.min(window.innerWidth, window.innerHeight);
     g.posX = clamp(drag.px + (e.clientX - drag.sx) / m, -1.5, 1.5);
     g.posY = clamp(drag.py - (e.clientY - drag.sy) / m, -1.5, 1.5);
+  } else if (drag.kind === 'rotate') {
+    // screen angles run clockwise (y points down); glyph rotation is counter-clockwise
+    let deg = drag.rot0 - ((Math.atan2(e.clientY - drag.cy, e.clientX - drag.cx) - drag.a0) * 180) / Math.PI;
+    deg = ((((deg + 180) % 360) + 360) % 360) - 180;
+    if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+    g.rot = clamp(deg, -180, 180);
   } else {
     const d = Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy);
     g.size = clamp(drag.size0 * (d / drag.d0), 0.2, 4);
