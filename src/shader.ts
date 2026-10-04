@@ -147,14 +147,12 @@ uniform float uFill;
 uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
 uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
-uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 particle waves
+uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid (5 = particle sea, drawn by its own passes)
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
 uniform float uLookD;
 uniform sampler2D uHeightTex; // height field, half resolution (ridgeline only)
-uniform highp sampler2D uParticles; // particle waves: displaced position (xy), brightness (z), size (w) per particle
-uniform vec4 uPGrid;       // particle waves: lattice width, height, particles per short side, aspect
 
 uniform vec3 uPaper;
 uniform vec3 uInk;
@@ -338,30 +336,6 @@ vec3 lookGrid(vec2 q, float H) {
   return mix(col, uIndex, major);
 }
 
-// ---- look 5: particle waves. A lattice of particles, moved by a separate pass (particleFragmentShader):
-// a wave runs away from the letter edges, bunching particles into rings that wrap around the letters;
-// nearby particles are drawn in towards the letters and a slow flow carries them around. Here each
-// particle is drawn where that pass left it.
-vec3 lookParticles(vec2 q) {
-  float cells = uPGrid.z;
-  vec2 origin = vec2(-uPGrid.w * 0.5, -0.5) - 1.0 / cells;
-  ivec2 base = ivec2(floor((q - origin) * cells));
-  ivec2 dims = ivec2(uPGrid.xy);
-  float px = 1.0 / min(uRes.x, uRes.y);
-  float best = 0.0;
-  for (int j = -2; j <= 2; j++) {
-    for (int i = -2; i <= 2; i++) {
-      ivec2 ij = base + ivec2(i, j);
-      if (ij.x < 0 || ij.y < 0 || ij.x >= dims.x || ij.y >= dims.y) continue;
-      vec4 pr = texelFetch(uParticles, ij, 0);
-      float r = 0.17 * uLineW * pr.w / cells;
-      float cov = 1.0 - smoothstep(r - px * 0.8, r + px * 0.8, length(q - pr.xy));
-      best = max(best, cov * pr.z);
-    }
-  }
-  return mix(uPaper, uIndex, best);
-}
-
 void main() {
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
 
@@ -377,7 +351,6 @@ void main() {
   else if (uLook == 2) col = lookBands(H);
   else if (uLook == 3) col = lookMosaic(q, d);
   else if (uLook == 4) col = lookGrid(q, H);
-  else if (uLook == 5) col = lookParticles(q);
   else col = lookTopo(d, H);
 
   if (uLook != 0) {
@@ -580,65 +553,154 @@ void main() {
 }
 `;
 
-// Particle waves, simulation pass: one texel per particle. Output: displaced position (xy), brightness (z), size (w).
-export const particleFragmentShader = /* glsl */ `
+
+// ---- Particle sea. State texture: position (xy, world units, short side = 1) and velocity (zw), one texel per particle.
+export const particleInitFragmentShader = /* glsl */ `
+precision highp float;
+uniform float uSeed;
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+void main() {
+  vec2 ij = floor(gl_FragCoord.xy);
+  gl_FragColor = vec4((hash(ij + uSeed) - 0.5) * 2.6, hash(ij + 17.3 + uSeed) - 0.5, 0.0, 0.0);
+}
+`;
+
+export const particleSimFragmentShader = /* glsl */ `
 precision highp float;
 
-uniform vec4 uPGrid;       // lattice width, height, particles per short side, aspect
-uniform float uLookB;      // wavelength
-uniform float uLookC;      // wave push
-uniform float uLookD;      // pull towards the letters
-uniform float uDrift;
+uniform sampler2D uState;
+uniform vec2 uOutRes;
+uniform float uDt;
+uniform float uAspect;
+uniform float uLookB;      // current speed
+uniform float uLookC;      // letters: attract (<0) .. repel (>0)
+uniform float uLookD;      // slide along the letter edges
+uniform float uDrift;      // how fast the current itself evolves
 uniform float uSeed;
-uniform float uFreq;
-uniform float uWarp;
+uniform float uFreq;       // size of the swells
+uniform float uWarp;       // turbulence
+uniform float uInfluence;  // how far from the letters they are felt
 ${glyphGLSL}
+
+const float LIFE = 9.0;
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float psi(vec2 p, float t) {
+  vec3 q = vec3(p * uFreq * 1.1 + uSeed * 3.1, t);
+  return snoise(q) + 0.5 * snoise(vec3(q.xy * 2.1 + 7.3, q.z * 1.4));
+}
+
+// the sea's own current: steady drift + rolling swells + curl-noise eddies (divergence free)
+vec2 current(vec2 p, float t) {
+  float S = uLookB;
+  vec2 v = vec2(0.22 * S, 0.0);
+  v.y += 0.07 * S * sin(p.x * uFreq * 2.4 - t * 1.3 + uSeed);   // rolling swell (depends on x only, so it never squeezes particles)
+  float e = 0.012 / max(uFreq, 0.2);
+  float tt = t * uDrift * 3.0;
+  vec2 g = vec2(psi(p + vec2(0.0, e), tt) - psi(p - vec2(0.0, e), tt),
+               -(psi(p + vec2(e, 0.0), tt) - psi(p - vec2(e, 0.0), tt))) / (2.0 * e);
+  v += g * S * 0.035 * (0.4 + uWarp);
+  return v;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uOutRes;
+  vec4 st = texture(uState, uv);
+  vec2 p = st.xy;
+  vec2 vel = st.zw;
+  float t = uTime;
+
+  float R = max(uInfluence, 0.06);
+  float d = glyphDist(p);
+  float e = 0.004;
+  vec2 n = vec2(glyphDist(p + vec2(e, 0.0)) - d, glyphDist(p + vec2(0.0, e)) - d);
+  n /= max(length(n), 1e-5);
+  vec2 tang = vec2(-n.y, n.x);
+
+  vec2 target = current(p, t);
+  float k = 1.0 - smoothstep(0.0, R, max(d, 0.0));          // closeness to a letter
+  float push = abs(uLookC);
+
+  // letters are obstacles: remove the part of the current that runs into them, slide along the edge instead
+  float into = min(dot(target, n), 0.0);
+  target -= n * into * k * (0.35 + 0.65 * push);
+  float sgn = dot(target, tang) >= 0.0 ? 1.0 : -1.0;
+  target += tang * sgn * uLookD * k * length(target) * 1.2;
+
+  // repel (or attract) in a soft shell around the edge; inside a letter, eject (or hold) firmly
+  // (a thin hard edge keeps each letter a crisp shape; the wider range above only bends the current)
+  float edge = 1.0 - smoothstep(0.0, 0.008 + 0.014 * push, max(d, 0.0));
+  target += n * uLookC * (edge * edge * 0.5 + step(d, 0.0) * 0.6);
+  target += n * min(uLookC, 0.0) * k * 0.3;                          // attract: a long-range pull towards the letters
+  if (d < 0.0 && uLookC < 0.0) target = target * mix(1.0, 0.1, push);   // ...and dots settle once inside
+
+  float follow = min(1.0, uDt * (2.5 + 5.0 * k));
+  vel += (target - vel) * follow;
+  p += vel * uDt;
+
+  // the sea has no edges: wrap around
+  float A = uAspect * 0.5 + 0.04;
+  p.x = mod(p.x + A, 2.0 * A) - A;
+  p.y = mod(p.y + 0.54, 1.08) - 0.54;
+
+  // every particle lives LIFE seconds (at its own phase), then is reborn somewhere random: keeps the sea evenly filled
+  vec2 ij = floor(gl_FragCoord.xy);
+  float ph = t / LIFE + hash(ij + 91.0);
+  if (uDt > 0.0 && floor(ph) != floor(ph - uDt / LIFE)) {
+    float gen = floor(ph);
+    p = vec2((hash(ij + gen * 13.1) - 0.5) * (uAspect + 0.08), hash(ij + gen * 7.7 + 3.0) - 0.5);
+    vel = vec2(0.0);
+  }
+  gl_FragColor = vec4(p, vel);
+}
+`;
+
+export const particlePointVertexShader = /* glsl */ `
+precision highp float;
+uniform sampler2D uState;
+uniform vec2 uRes;
+uniform float uPx;
+uniform float uTime;
+uniform float uSide;
+attribute vec2 ref;
+varying float vB;
 
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
-vec2 hash22(vec2 p) {
-  return vec2(hash(p), hash(p + 19.19));
-}
 
 void main() {
-  vec2 ij = floor(gl_FragCoord.xy);
-  float cells = uPGrid.z;
-  float cell = 1.0 / cells;
-  vec2 origin = vec2(-uPGrid.w * 0.5, -0.5) - cell;
-  vec2 h = hash22(ij + uSeed * 7.0);
-  vec2 x0 = origin + (ij + 0.5 + (h - 0.5) * 0.7) * cell;
+  vec4 st = texture(uState, ref);
+  float aspect = uRes.x / uRes.y;
+  gl_Position = vec4(st.x / (aspect * 0.5), st.y / 0.5, 0.0, 1.0);
+  float h = hash(ref * 977.0);
+  float speed = length(st.zw);
+  float age = fract(uTime / 9.0 + hash(floor(ref * uSide) + 91.0)) * 9.0;     // same phase as the simulation
+  float fade = smoothstep(0.0, 0.9, age) * (1.0 - smoothstep(8.1, 9.0, age));
+  vB = (0.35 + 0.65 * h) * (0.7 + 0.3 * smoothstep(0.0, 0.2, speed)) * fade;
+  gl_PointSize = max(1.0, uPx * (0.65 + 0.7 * hash(ref * 31.7 + 5.0)));
+}
+`;
 
-  float d = glyphDist(x0);
-  float e = 0.004;
-  vec2 n = vec2(glyphDist(x0 + vec2(e, 0.0)) - d, glyphDist(x0 + vec2(0.0, e)) - d);
-  n /= max(length(n), 1e-5);
-  vec2 tang = vec2(-n.y, n.x);
+export const particlePointFragmentShader = /* glsl */ `
+precision highp float;
+uniform vec3 uDotColor;
+varying float vB;
+void main() {
+  float r = length(gl_PointCoord - 0.5) * 2.0;
+  float a = 1.0 - smoothstep(0.55, 1.0, r);
+  gl_FragColor = vec4(uDotColor, a * vB);
+}
+`;
 
-  // travelling wave away from the letter edges (it carries on, as rings, inside the letters too)
-  float lam = max(uLookB, 0.01);
-  float t = uTime * uDrift * 6.0;
-  float dn = d + 0.01 * snoise(vec3(x0 * 3.0, uTime * 0.2));
-  float th = 6.2831853 * (dn / lam - t);
-  float reach = 1.0 - smoothstep(0.0, 1.0, max(dn, 0.0));
-  float inside = step(d, 0.0);
-  float push = uLookC * lam * 0.16 * (0.3 + 0.7 * reach) * mix(1.0, 0.08, inside);   // particles inside the letters stay put
-  vec2 disp = n * cos(th) * push;                                        // bunches particles into rings
-  disp += tang * sin(0.5 * th + uTime * 0.3) * push * 0.6;              // and slides them around the letters
-
-  // pull towards the letters: nearby particles drift to the edge, so the letters gather a denser swarm
-  float pull = uLookD * (1.0 - smoothstep(0.0, 0.2, d)) * step(0.0, d);
-  disp -= n * d * pull * 0.6;
-
-  // slow generative flow, different per seed
-  vec3 fp = vec3(x0 * uFreq * 0.7 + uSeed, uTime * 0.08);
-  disp += vec2(snoise(fp), snoise(fp + vec3(11.0, 5.0, 0.0))) * uWarp * cell * 1.5;
-
-  disp *= min(1.0, 1.8 * cell / max(length(disp), 1e-6));
-  float crest = smoothstep(0.0, 1.0, sin(th));
-  float bright = mix(0.3 + 0.7 * (0.35 * crest + 0.65 * (0.4 + 0.6 * reach) * crest), 1.0, inside);
-  bright *= 0.6 + 0.4 * hash(ij + 3.1);
-  float size = 0.7 + 0.6 * hash(ij + 8.8);
-  gl_FragColor = vec4(x0 + disp, bright, size);
+export const flatFragmentShader = /* glsl */ `
+precision highp float;
+uniform vec3 uColor;
+void main() {
+  gl_FragColor = vec4(uColor, 1.0);
 }
 `;

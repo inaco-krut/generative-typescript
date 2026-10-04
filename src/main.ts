@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import GUI from 'lil-gui';
 import {
   blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, compositeFragmentShader, fragmentShader,
-  particleFragmentShader, postFragmentShader, vertexShader,
+  flatFragmentShader, particleInitFragmentShader, particlePointFragmentShader, particlePointVertexShader,
+  particleSimFragmentShader, postFragmentShader, vertexShader,
 } from './shader';
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
 import { EffectsPanel } from './effectsUI';
@@ -63,8 +64,6 @@ const uniforms = {
   uLookC: { value: params.lookC },
   uLookD: { value: params.lookD },
   uHeightTex: { value: null as THREE.Texture | null },
-  uParticles: { value: null as THREE.Texture | null },
-  uPGrid: { value: new THREE.Vector4(1, 1, 100, 1) },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
   uWobble: { value: params.wobble },
@@ -305,41 +304,126 @@ function renderHeightField(): void {
   uniforms.uHeightTex.value = heightRT.texture;
 }
 
-// Particle waves: a small pass moves one particle per lattice texel; the look shader then draws them.
-let particleRT: THREE.WebGLRenderTarget | null = null;
-let particleMat: THREE.ShaderMaterial | null = null;
-function renderParticles(): void {
-  const res = uniforms.uRes.value;
-  const cells = Math.max(20, Math.round(params.lookA));
-  const aspect = res.x / res.y;
-  const nx = Math.ceil(cells * aspect) + 3;
-  const ny = cells + 3;
-  if (!particleRT || particleRT.width !== nx || particleRT.height !== ny) {
-    particleRT?.dispose();
-    particleRT = new THREE.WebGLRenderTarget(nx, ny, {
-      type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-    });
+// Particle sea: every particle keeps its own position and velocity in a float texture that is stepped each frame
+// (ping-pong). The letters are obstacles in the current; the points are then drawn as GL points.
+let simRT: THREE.WebGLRenderTarget[] | null = null;
+let simSide = 0;
+let simRead = 0;
+let simDt = 0;
+let simInit = true;
+let seaPoints: THREE.Points | null = null;
+const seaScene = new THREE.Scene();
+const seaBg = new THREE.Mesh(
+  new THREE.PlaneGeometry(2, 2),
+  new THREE.ShaderMaterial({ uniforms: { uColor: { value: uniforms.uPaper.value } }, vertexShader, fragmentShader: flatFragmentShader, depthTest: false, depthWrite: false }),
+);
+seaBg.renderOrder = 0;
+seaBg.frustumCulled = false;
+seaScene.add(seaBg);
+
+const simMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uState: { value: null as THREE.Texture | null },
+    uOutRes: { value: new THREE.Vector2() },
+    uDt: { value: 0 },
+    uAspect: { value: 1 },
+    uLookB: uniforms.uLookB, uLookC: uniforms.uLookC, uLookD: uniforms.uLookD,
+    uDrift: uniforms.uDrift, uSeed: uniforms.uSeed, uFreq: uniforms.uFreq, uWarp: uniforms.uWarp, uInfluence: uniforms.uInfluence,
+    ...glyphUniforms,
+  },
+  vertexShader,
+  fragmentShader: particleSimFragmentShader,
+});
+const initMat = new THREE.ShaderMaterial({
+  uniforms: { uSeed: uniforms.uSeed, uOutRes: { value: new THREE.Vector2() } },
+  vertexShader,
+  fragmentShader: particleInitFragmentShader,
+});
+const pointsMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uState: { value: null as THREE.Texture | null },
+    uRes: uniforms.uRes,
+    uPx: { value: 2 },
+    uTime: uniforms.uTime,
+    uSide: { value: 1 },
+    uDotColor: { value: uniforms.uIndex.value },
+  },
+  vertexShader: particlePointVertexShader,
+  fragmentShader: particlePointFragmentShader,
+  transparent: true,
+  depthTest: false,
+  depthWrite: false,
+});
+
+function ensureSea(): void {
+  const side = Math.ceil(Math.sqrt(Math.max(10, Math.round(params.lookA)) * 1000));
+  if (simRT && side === simSide) return;
+  simRT?.forEach((r) => r.dispose());
+  simRT = [0, 1].map(
+    () =>
+      new THREE.WebGLRenderTarget(side, side, {
+        type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      }),
+  );
+  simSide = side;
+  simInit = true;
+  const n = side * side;
+  const ref = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    ref[i * 2] = ((i % side) + 0.5) / side;
+    ref[i * 2 + 1] = (Math.floor(i / side) + 0.5) / side;
   }
-  uniforms.uPGrid.value.set(nx, ny, cells, aspect);
-  particleMat ??= new THREE.ShaderMaterial({
-    uniforms: {
-      uPGrid: uniforms.uPGrid, uLookB: uniforms.uLookB, uLookC: uniforms.uLookC, uLookD: uniforms.uLookD,
-      uDrift: uniforms.uDrift, uSeed: uniforms.uSeed, uFreq: uniforms.uFreq, uWarp: uniforms.uWarp,
-      ...glyphUniforms,
-    },
-    vertexShader,
-    fragmentShader: particleFragmentShader,
-  });
-  uniforms.uParticles.value = blankTex; // never sample the texture we are rendering into
-  fxPass(particleMat, particleRT);
-  uniforms.uParticles.value = particleRT.texture;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  geo.setAttribute('ref', new THREE.BufferAttribute(ref, 2));
+  if (seaPoints) {
+    seaScene.remove(seaPoints);
+    seaPoints.geometry.dispose();
+  }
+  seaPoints = new THREE.Points(geo, pointsMat);
+  seaPoints.frustumCulled = false;
+  seaPoints.renderOrder = 1;
+  seaScene.add(seaPoints);
+}
+
+/** Scripted-test hook: advance the sea by n steps of 1/30 s without waiting for real frames. */
+(window as unknown as { __warmSea: (n: number) => void }).__warmSea = (n: number) => {
+  const prev = simDt;
+  simDt = 1 / 30;
+  for (let i = 0; i < n; i++) {
+    time += simDt;
+    uniforms.uTime.value = time;
+    stepSea();
+  }
+  simDt = prev;
+};
+
+function stepSea(): void {
+  ensureSea();
+  const rts = simRT as THREE.WebGLRenderTarget[];
+  if (simInit) {
+    fxPass(initMat, rts[0]);
+    simInit = false;
+    simRead = 0;
+  }
+  if (simDt > 0) {
+    simMat.uniforms.uState.value = rts[simRead].texture;
+    simMat.uniforms.uDt.value = Math.min(simDt, 0.05);
+    simMat.uniforms.uAspect.value = uniforms.uRes.value.x / uniforms.uRes.value.y;
+    fxPass(simMat, rts[1 - simRead]);
+    simRead = 1 - simRead;
+  }
+  pointsMat.uniforms.uState.value = rts[simRead].texture;
+  pointsMat.uniforms.uSide.value = simSide;
+  pointsMat.uniforms.uPx.value = Math.max(1, params.lineWidth * 2.1 * (uniforms.uRes.value.y / 800));
 }
 
 function renderFrame(): void {
   if (params.look === 1 && floatRT) renderHeightField();
-  if (params.look === 5) renderParticles();
+  if (params.look === 5) stepSea();
   renderer.setRenderTarget(sceneRT);
-  renderer.render(scene, camera);
+  if (params.look === 5) renderer.render(seaScene, camera);
+  else renderer.render(scene, camera);
   const stacked = runEffects();
   const src = stacked ?? sceneRT.texture;
   postUniforms.uScene.value = src;
@@ -675,7 +759,7 @@ gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
 gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
 
 // How the landscape is drawn. The three sliders mean different things per look.
-const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, 'Particle waves': 5 } as const;
+const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, 'Particle sea': 5 } as const;
 type LookKey = 'lookA' | 'lookB' | 'lookC' | 'lookD';
 interface LookSlider { label: string; min: number; max: number; step: number; value: number }
 const lookDefs: Record<number, (LookSlider | null)[]> = {
@@ -700,10 +784,10 @@ const lookDefs: Record<number, (LookSlider | null)[]> = {
     null,
   ],
   5: [
-    { label: 'particles', min: 40, max: 260, step: 1, value: 130 },
-    { label: 'wavelength', min: 0.03, max: 0.25, step: 0.002, value: 0.09 },
-    { label: 'wave push', min: 0, max: 2, step: 0.01, value: 0.9 },
-    { label: 'pull to letters', min: 0, max: 1, step: 0.01, value: 0.5 },
+    { label: 'particles (thousands)', min: 10, max: 400, step: 1, value: 170 },
+    { label: 'current speed', min: 0, max: 1.5, step: 0.01, value: 0.55 },
+    { label: 'letters: attract ↔ repel', min: -1, max: 1, step: 0.01, value: 0.6 },
+    { label: 'slide along edges', min: 0, max: 1, step: 0.01, value: 0.55 },
   ],
 };
 
@@ -783,6 +867,7 @@ const actions = {
     refreshGui();
   },
   savePNG() {
+    simDt = 0; // export exactly what is on screen
     renderFrame();
     canvas.toBlob((blob) => {
       if (!blob) return;
@@ -1217,6 +1302,7 @@ let time = 0;
 function frame(): void {
   const dt = clock.getDelta();
   if (params.animate) time += dt;
+  simDt = params.animate ? dt : 0;
   uniforms.uTime.value = time;
 
   for (let i = 0; i < MAX_GLYPHS; i++) {
