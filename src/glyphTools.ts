@@ -6,7 +6,9 @@ export interface GlyphToolsHost {
   get(): {
     index: number; text: string; size: number; outline: boolean; outlineW: number; shortSide: number;
     color: string; opacity: number; custom: boolean; image: boolean; imageColor: boolean;
+    layer: number; layers: number;
   } | null;
+  moveLayer(to: 'back' | 'down' | 'up' | 'front'): void;
   setOutline(on: boolean): void;
   setThickness(w: number): void;
   setColor(hex: string): void;
@@ -42,6 +44,8 @@ export class GlyphTools {
   private autoBtn = el('button', 'gt-auto', 'Palette');
   private opacityIn = el('input');
   private opacityRead = el('output', 'gt-read');
+  private layerRow = el('div', 'gt-row');
+  private layerBtns: HTMLButtonElement[] = [];
 
   constructor(private host: GlyphToolsHost) {
     const r = this.root;
@@ -86,7 +90,18 @@ export class GlyphTools {
     imgSeg.append(this.origBtn, this.tintBtn);
     this.imgRow.append(el('span', 'gt-label', 'Image'), imgSeg);
 
-    r.append(head, modeRow, this.imgRow, colorRow, opacityRow, this.strokeRow);
+    const layerSeg = el('div', 'gt-segs four');
+    const defs: [string, string, 'back' | 'down' | 'up' | 'front'][] = [['⤓', 'Send to back', 'back'], ['↓', 'Move back one step', 'down'], ['↑', 'Move forward one step', 'up'], ['⤒', 'Bring to front', 'front']];
+    for (const [label, title, to] of defs) {
+      const b = el('button', 'gt-seg', label);
+      b.title = title;
+      b.addEventListener('click', () => host.moveLayer(to));
+      this.layerBtns.push(b);
+      layerSeg.append(b);
+    }
+    this.layerRow.append(el('span', 'gt-label', 'Layer'), layerSeg);
+
+    r.append(head, modeRow, this.imgRow, colorRow, opacityRow, this.strokeRow, this.layerRow);
 
     this.solidBtn.addEventListener('click', () => host.setOutline(false));
     this.lineBtn.addEventListener('click', () => host.setOutline(true));
@@ -124,6 +139,10 @@ export class GlyphTools {
     if (Number(this.opacityIn.value) !== g.opacity) this.opacityIn.value = String(g.opacity);
     this.opacityRead.textContent = `${Math.round(g.opacity * 100)}%`;
     this.opacityIn.style.setProperty('--fill', `${g.opacity * 100}%`);
+    this.layerRow.title = `Layer ${g.layer + 1} of ${g.layers}`;
+    this.layerRow.hidden = g.layers < 2;
+    this.layerBtns[0].disabled = this.layerBtns[1].disabled = g.layer === 0;
+    this.layerBtns[2].disabled = this.layerBtns[3].disabled = g.layer === g.layers - 1;
     this.slider.style.setProperty('--fill', `${((g.outlineW - MIN_W) / (MAX_W - MIN_W)) * 100}%`);
 
     // sit just below the selection box; flip above it when there is no room

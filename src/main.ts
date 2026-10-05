@@ -31,6 +31,7 @@ const gGrow: number[] = new Array(MAX_GLYPHS).fill(0);
 const gWarp: number[] = new Array(MAX_GLYPHS).fill(0);
 const gOp: number[] = new Array(MAX_GLYPHS).fill(1);
 const gImg: number[] = new Array(MAX_GLYPHS).fill(0);
+const gOrder: number[] = Array.from({ length: MAX_GLYPHS }, (_, i) => i); // glyph indices, back to front
 const gFill = Array.from({ length: MAX_GLYPHS }, () => new THREE.Color());
 const gStroke = Array.from({ length: MAX_GLYPHS }, () => new THREE.Color());
 const gXform = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector4(1, 0, 0, 1));
@@ -70,6 +71,7 @@ const uniforms = {
   uGOp: { value: gOp },
   uImgArr: { value: store.imgTex },
   uGImg: { value: gImg },
+  uGOrder: { value: gOrder },
   uShapeWarpScale: { value: params.shapeWarpScale },
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
@@ -110,7 +112,7 @@ const glyphUniforms = {
   uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform, uGOut: uniforms.uGOut,
   uBlend: uniforms.uBlend, uGSoft: uniforms.uGSoft, uGGrow: uniforms.uGGrow, uGWarp: uniforms.uGWarp,
   uGFill: uniforms.uGFill, uGStroke: uniforms.uGStroke, uGOp: uniforms.uGOp,
-  uImgArr: uniforms.uImgArr, uGImg: uniforms.uGImg,
+  uImgArr: uniforms.uImgArr, uGImg: uniforms.uGImg, uGOrder: uniforms.uGOrder,
   uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
 };
 
@@ -610,6 +612,25 @@ function glyphMatrices(g: GlyphDef) {
 const glyphFillHex = (g: GlyphDef) => g.color || palettes[params.palette].index;
 const glyphStrokeHex = (g: GlyphDef) => g.strokeColor || glyphFillHex(g);
 
+/** Glyph indices from back to front (ties follow the glyph order). */
+function stackOrder(): number[] {
+  const n = Math.min(params.glyphs.length, MAX_GLYPHS);
+  const z = (i: number) => params.glyphs[i].z ?? i;
+  return Array.from({ length: n }, (_, i) => i).sort((a, b) => z(a) - z(b) || a - b);
+}
+
+function moveLayer(to: 'back' | 'down' | 'up' | 'front'): void {
+  const g = params.glyphs[selectedIdx];
+  if (!g) return;
+  const order = stackOrder();
+  const pos = order.indexOf(selectedIdx);
+  const dst = to === 'back' ? 0 : to === 'front' ? order.length - 1 : Math.min(Math.max(pos + (to === 'up' ? 1 : -1), 0), order.length - 1);
+  order.splice(pos, 1);
+  order.splice(dst, 0, selectedIdx);
+  order.forEach((gi, r) => { params.glyphs[gi].z = r; });
+  refreshGui();
+}
+
 function syncUniforms(): void {
   postUniforms.uGlass.value = params.glass;
   postUniforms.uGlassLight.value = params.glassLight;
@@ -617,6 +638,7 @@ function syncUniforms(): void {
   uniforms.uMode.value = params.mode;
   const n = Math.min(params.glyphs.length, MAX_GLYPHS);
   uniforms.uCount.value = n;
+  stackOrder().forEach((gi, r) => { gOrder[r] = gi; });
 
   for (let i = 0; i < n; i++) {
     const g = params.glyphs[i];
@@ -1503,8 +1525,10 @@ const glyphTools = new GlyphTools({
       custom: !!g.color || !!g.strokeColor,
       image: !!g.image,
       imageColor: g.imageColor,
+      layer: stackOrder().indexOf(selectedIdx), layers: stackOrder().length,
     };
   },
+  moveLayer,
   setOutline: (on) => {
     const g = params.glyphs[selectedIdx];
     if (!g) return;

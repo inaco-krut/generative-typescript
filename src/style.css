@@ -176,7 +176,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 #glyph-tools .gt-label { color: var(--ui-dim); }
 #glyph-tools .gt-segs { display: grid; grid-template-columns: 1fr 1fr; padding: 2px; gap: 2px; background: var(--ui-bg-3); border-radius: 8px; }
 #glyph-tools .gt-seg { font: inherit; font-weight: 500; color: var(--ui-dim); background: transparent; border: 0; border-radius: 6px; padding: 5px 0; cursor: pointer; }
-#glyph-tools .gt-seg:hover { color: var(--ui-text); }
+#glyph-tools .gt-segs.four { grid-template-columns: repeat(4, 1fr); flex: 1; }
+#glyph-tools .gt-seg:disabled { opacity: 0.3; cursor: default; }
+#glyph-tools .gt-seg:hover:not(:disabled) { color: var(--ui-text); }
 #glyph-tools .gt-seg.on { color: #fff; background: var(--ui-acc); }
 #glyph-tools .gt-row:has(.gt-slider) { grid-template-columns: 62px 1fr 44px; }
 #glyph-tools .gt-read { text-align: right; color: var(--ui-text); font: 500 11px var(--ui-mono); font-variant-numeric: tabular-nums; }

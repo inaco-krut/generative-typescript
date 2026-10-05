@@ -19,6 +19,7 @@ export interface GlyphDef {
   color: string; // fill colour; '' follows the palette
   strokeColor: string; // outline colour; '' = same as the fill colour
   opacity: number; // 0 = not filled in, 1 = solid
+  z?: number; // stacking position (higher = in front); unset follows the glyph order
   // shape, per glyph
   grow: number; // weight: > 0 bolder, < 0 thinner
   soft: number; // corner softening

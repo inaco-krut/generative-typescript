@@ -76,6 +76,7 @@ uniform vec3 uGStroke[MAXG];  // per glyph: outline colour
 uniform float uGOp[MAXG];     // per glyph: opacity
 uniform highp sampler2DArray uImgArr; // colour pixels of imported images, one layer per glyph (premultiplied)
 uniform float uGImg[MAXG];    // per glyph: 1 = draw the image's own colours
+uniform int uGOrder[MAXG];    // glyph indices from back to front
 ${noiseGLSL}
 
 float sampleGlyph(int i, vec2 c) {
@@ -136,48 +137,42 @@ float glyphDist(vec2 q) {
 vec4 glyphPaint(vec2 q, out float cover, out float imgFrac) {
   float k = uBlend * 0.25;
   float best = 1e3;
-  vec3 cs = vec3(0.0);
-  float os = 0.0;
-  float ws = 0.0;
-  float iw = 0.0; // weight of glyphs drawn from an imported picture
-  vec3 ringRGB = vec3(0.0); // premultiplied
-  float ringA = 0.0;
   float ringCover = 0.0;
-  for (int i = 0; i < MAXG; i++) {
-    if (i >= uCount) break;
+  vec3 rgbP = vec3(0.0); // premultiplied, composited back to front
+  float aT = 0.0;
+  float imgA = 0.0;
+  for (int r = 0; r < MAXG; r++) {
+    if (r >= uCount) break;
+    int i = uGOrder[r];
     float d = glyphOne(i, q);
+    float fd = max(fwidth(d), 1e-6);
+    vec3 c;
+    float a;
+    float isImg = 0.0;
     if (uGOut[i] > 0.0) {
-      float fd = max(fwidth(d), 1e-6);
-      float r = smoothstep(-fd, fd, d + uGOut[i]) * (1.0 - smoothstep(-fd, fd, d));
-      float a = r * uGOp[i];
-      ringRGB = ringRGB * (1.0 - a) + uGStroke[i] * a;
-      ringA = ringA + a * (1.0 - ringA);
-      ringCover = max(ringCover, r);
+      float ring = smoothstep(-fd, fd, d + uGOut[i]) * (1.0 - smoothstep(-fd, fd, d));
+      a = ring * uGOp[i];
+      c = uGStroke[i];
+      ringCover = max(ringCover, ring);
     } else {
       best = k > 0.0001 ? smin(best, d, k) : min(best, d);
-      float w = exp(-clamp(d, -0.5, 4.0) * 120.0);
-      vec3 fillC = uGFill[i];
+      a = (1.0 - smoothstep(-fd, fd, d)) * uGOp[i];
+      c = uGFill[i];
       if (uGImg[i] > 0.5) {
         // imported picture: its own colours (stored premultiplied, so edges do not pick up a dark fringe)
         vec4 t = texture(uImgArr, vec3(clamp(glyphUV(i, q), 0.0, 1.0), float(i)));
-        fillC = t.rgb / max(t.a, 1e-3);
+        c = t.rgb / max(t.a, 1e-3);
+        isImg = 1.0;
       }
-      cs += fillC * w;
-      if (uGImg[i] > 0.5) iw += w;
-      os += uGOp[i] * w;
-      ws += w;
     }
+    rgbP = rgbP * (1.0 - a) + c * a;
+    imgA = imgA * (1.0 - a) + isImg * a;
+    aT = aT + a * (1.0 - aT);
   }
   float fdF = max(fwidth(best), 1e-6);
-  float covF = 1.0 - smoothstep(-fdF, fdF, best);
-  bool any = ws > 1e-30;
-  vec3 cF = any ? cs / ws : vec3(0.0);
-  float aF = covF * (any ? os / ws : 0.0);
-  cover = max(covF, ringCover);
-  imgFrac = any ? iw / ws : 0.0; // share of the fill that comes from pictures (they are drawn above the contour lines)
-  float aT = ringA + aF * (1.0 - ringA);
-  vec3 rgb = (ringRGB + cF * aF * (1.0 - ringA)) / max(aT, 1e-5);
-  return vec4(rgb, aT);
+  cover = max(1.0 - smoothstep(-fdF, fdF, best), ringCover);
+  imgFrac = imgA / max(aT, 1e-5); // share of the paint that comes from pictures (drawn above the contour lines)
+  return vec4(rgbP / max(aT, 1e-5), aT);
 }
 `;
 
