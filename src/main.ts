@@ -8,7 +8,7 @@ import {
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
 import { EffectsPanel } from './effectsUI';
 import { GlyphTools } from './glyphTools';
-import { maskFromFile, renderGlyphSDF, renderMaskSDF } from './glyph';
+import { decodeImage, importImage, renderGlyphSDF, type DecodedImage } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
@@ -30,6 +30,7 @@ const gSoft: number[] = new Array(MAX_GLYPHS).fill(0);
 const gGrow: number[] = new Array(MAX_GLYPHS).fill(0);
 const gWarp: number[] = new Array(MAX_GLYPHS).fill(0);
 const gOp: number[] = new Array(MAX_GLYPHS).fill(1);
+const gImg: number[] = new Array(MAX_GLYPHS).fill(0);
 const gFill = Array.from({ length: MAX_GLYPHS }, () => new THREE.Color());
 const gStroke = Array.from({ length: MAX_GLYPHS }, () => new THREE.Color());
 const gXform = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector4(1, 0, 0, 1));
@@ -67,6 +68,8 @@ const uniforms = {
   uGFill: { value: gFill },
   uGStroke: { value: gStroke },
   uGOp: { value: gOp },
+  uImgArr: { value: store.imgTex },
+  uGImg: { value: gImg },
   uShapeWarpScale: { value: params.shapeWarpScale },
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
@@ -107,6 +110,7 @@ const glyphUniforms = {
   uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform, uGOut: uniforms.uGOut,
   uBlend: uniforms.uBlend, uGSoft: uniforms.uGSoft, uGGrow: uniforms.uGGrow, uGWarp: uniforms.uGWarp,
   uGFill: uniforms.uGFill, uGStroke: uniforms.uGStroke, uGOp: uniforms.uGOp,
+  uImgArr: uniforms.uImgArr, uGImg: uniforms.uGImg,
   uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
 };
 
@@ -509,25 +513,28 @@ const hashString = (str: string) => {
 };
 
 /** Imported silhouettes go through the same distance-field route as text. */
+const imageCache = new Map<string, DecodedImage>();
+
 async function loadImageGlyph(i: number, morph: boolean): Promise<void> {
   const g = params.glyphs[i];
   const token = ++loadTokens[i];
   const key = `img|${hashString(g.image)}`;
-  let sdf = sdfCache.get(key);
-  if (!sdf) {
+  let decoded = imageCache.get(key);
+  if (!decoded) {
     try {
-      sdf = await renderMaskSDF(g.image);
+      decoded = await decodeImage(g.image);
     } catch {
       if (token !== loadTokens[i] || !params.glyphs[i]) return;
       toast('That image could not be read, so the glyph went back to text');
       g.image = '';
       return loadGlyph(i, morph);
     }
-    sdfCache.set(key, sdf);
-    if (sdfCache.size > 32) sdfCache.delete(sdfCache.keys().next().value as string);
+    imageCache.set(key, decoded);
+    if (imageCache.size > 8) imageCache.delete(imageCache.keys().next().value as string);
   }
   if (token !== loadTokens[i] || !params.glyphs[i]) return; // superseded
-  store.set(i, sdf, boundsOf(sdf) ?? { ...defaultBounds }, morph);
+  store.set(i, decoded.sdf, boundsOf(decoded.sdf) ?? { ...defaultBounds }, morph);
+  store.setImage(i, decoded.rgba);
   gMorph[i] = morph ? 0 : 1;
   morphStart[i] = morph ? performance.now() : -1;
   sdfVersion++;
@@ -622,6 +629,7 @@ function syncUniforms(): void {
     gGrow[i] = g.grow;
     gWarp[i] = g.warp;
     gOp[i] = g.opacity;
+    gImg[i] = g.image && g.imageColor && !g.outline ? 1 : 0; // outlines are drawn in a single colour
     gFill[i].set(glyphFillHex(g));
     gStroke[i].set(glyphStrokeHex(g));
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
@@ -714,7 +722,7 @@ const presetActions = {
     presetState.name = '';
     presetCtl.updateDisplay();
     nameCtl.updateDisplay();
-    if (!stored) console.warn('Could not write to localStorage; preset lasts until you reload.');
+    if (!stored) toast('Browser storage is full or blocked, so this preset only lasts until you reload (pictures make presets large)');
   },
   remove() {
     if (!(presetState.preset in userPresets)) return; // built-ins cannot be deleted
@@ -1048,28 +1056,30 @@ async function addImageGlyph(file: File): Promise<void> {
     toast(`Up to ${MAX_GLYPHS} glyphs at once`);
     return;
   }
-  let mask;
+  let imported;
   try {
-    mask = await maskFromFile(file);
+    imported = await importImage(file);
   } catch {
     toast('That file could not be read as an image');
     return;
   }
   const base = activeGlyph();
+  const first = params.glyphs.length === 1;
   params.glyphs.push({
     ...defaultGlyph,
     text: file.name.replace(/\.[^.]+$/, '').slice(0, 24) || 'image',
     font: base.font,
-    image: mask.dataUrl,
-    size: params.glyphs.length === 1 ? 1.1 : clamp(base.size * 0.8, 0.2, 4),
-    posX: params.glyphs.length === 1 ? 0 : clamp(base.posX + 0.3, -1.2, 1.2),
-    posY: params.glyphs.length === 1 ? 0 : clamp(base.posY - 0.25, -1.2, 1.2),
+    image: imported.dataUrl,
+    imageColor: true, // show the picture itself
+    opacity: 1,
+    size: first ? 1.1 : clamp(base.size * 0.8, 0.2, 4),
+    posX: first ? 0 : clamp(base.posX + 0.3, -1.2, 1.2),
+    posY: first ? 0 : clamp(base.posY - 0.25, -1.2, 1.2),
   });
   activeIdx = selectedIdx = params.glyphs.length - 1;
   void loadGlyph(activeIdx, false);
   refreshGlyphPicker();
   refreshGui();
-  if (mask.opaque) toast('This image has no transparent area, so it was used as a solid block');
 }
 
 imageInput.addEventListener('change', async () => {
@@ -1491,6 +1501,8 @@ const glyphTools = new GlyphTools({
       color: g.outline ? glyphStrokeHex(g) : glyphFillHex(g),
       opacity: g.opacity,
       custom: !!g.color || !!g.strokeColor,
+      image: !!g.image,
+      imageColor: g.imageColor,
     };
   },
   setOutline: (on) => {
@@ -1506,6 +1518,12 @@ const glyphTools = new GlyphTools({
     if (!g) return;
     if (g.outline) g.strokeColor = hex;
     else g.color = hex;
+    refreshGui();
+  },
+  setImageColor: (on) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.imageColor = on;
     refreshGui();
   },
   usePalette: () => {

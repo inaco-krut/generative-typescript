@@ -13,7 +13,8 @@ export interface GlyphDef {
   morph: number; // 0..1 blend between text and text2
   outline: boolean; // draw only an outline instead of a solid fill
   outlineW: number; // outline thickness, short-side units
-  image: string; // imported silhouette (PNG data URL); when set it replaces the text
+  image: string; // imported picture (image data URL); when set it replaces the text
+  imageColor: boolean; // draw the picture's own colours (false: only its shape, in the glyph colour)
   // appearance, per glyph
   color: string; // fill colour; '' follows the palette
   strokeColor: string; // outline colour; '' = same as the fill colour
@@ -71,7 +72,7 @@ export interface Params {
 }
 
 export const defaultGlyph: GlyphDef = {
-  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0, outline: false, outlineW: 0.012, image: '',
+  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0, outline: false, outlineW: 0.012, image: '', imageColor: false,
   color: '', strokeColor: '', opacity: 0.9, grow: 0, soft: 0, warp: 0,
 };
 

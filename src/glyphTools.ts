@@ -5,12 +5,13 @@
 export interface GlyphToolsHost {
   get(): {
     index: number; text: string; size: number; outline: boolean; outlineW: number; shortSide: number;
-    color: string; opacity: number; custom: boolean;
+    color: string; opacity: number; custom: boolean; image: boolean; imageColor: boolean;
   } | null;
   setOutline(on: boolean): void;
   setThickness(w: number): void;
   setColor(hex: string): void;
   usePalette(): void;
+  setImageColor(on: boolean): void;
   setOpacity(v: number): void;
 }
 
@@ -34,6 +35,10 @@ export class GlyphTools {
   private readout = el('output', 'gt-read');
   private strokeRow = el('div', 'gt-row');
   private colorIn = el('input');
+  private colorRow = el('div', 'gt-row');
+  private imgRow = el('div', 'gt-row');
+  private origBtn = el('button', 'gt-seg', 'Original');
+  private tintBtn = el('button', 'gt-seg', 'One colour');
   private autoBtn = el('button', 'gt-auto', 'Palette');
   private opacityIn = el('input');
   private opacityRead = el('output', 'gt-read');
@@ -62,7 +67,7 @@ export class GlyphTools {
     this.colorIn.type = 'color';
     this.colorIn.className = 'gt-color';
     this.colorIn.title = 'colour of this glyph';
-    const colorRow = el('div', 'gt-row');
+    const colorRow = this.colorRow;
     this.autoBtn.title = 'Go back to the palette colours';
     const swatch = el('div', 'gt-colorwrap');
     swatch.append(this.colorIn, this.autoBtn);
@@ -77,13 +82,19 @@ export class GlyphTools {
     const opacityRow = el('div', 'gt-row');
     opacityRow.append(el('span', 'gt-label', 'Opacity'), this.opacityIn, this.opacityRead);
 
-    r.append(head, modeRow, colorRow, opacityRow, this.strokeRow);
+    const imgSeg = el('div', 'gt-segs');
+    imgSeg.append(this.origBtn, this.tintBtn);
+    this.imgRow.append(el('span', 'gt-label', 'Image'), imgSeg);
+
+    r.append(head, modeRow, this.imgRow, colorRow, opacityRow, this.strokeRow);
 
     this.solidBtn.addEventListener('click', () => host.setOutline(false));
     this.lineBtn.addEventListener('click', () => host.setOutline(true));
     this.slider.addEventListener('input', () => host.setThickness(Number(this.slider.value)));
     this.colorIn.addEventListener('input', () => host.setColor(this.colorIn.value));
     this.autoBtn.addEventListener('click', () => host.usePalette());
+    this.origBtn.addEventListener('click', () => host.setImageColor(true));
+    this.tintBtn.addEventListener('click', () => host.setImageColor(false));
     this.opacityIn.addEventListener('input', () => host.setOpacity(Number(this.opacityIn.value)));
     // never let clicks on the panel reach the canvas (that would deselect the glyph)
     r.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -105,6 +116,11 @@ export class GlyphTools {
     this.readout.textContent = `${(g.outlineW * g.shortSide).toFixed(0)} px`;
     if (this.colorIn.value !== g.color.toLowerCase()) this.colorIn.value = g.color;
     this.autoBtn.hidden = !g.custom; // only offered once a colour was chosen by hand
+    // imported pictures: choose between their own colours and a single colour; colour only applies to the latter
+    this.imgRow.hidden = !g.image || g.outline; // outlines are always a single colour
+    this.origBtn.classList.toggle('on', g.imageColor);
+    this.tintBtn.classList.toggle('on', !g.imageColor);
+    this.colorRow.hidden = g.image && g.imageColor && !g.outline;
     if (Number(this.opacityIn.value) !== g.opacity) this.opacityIn.value = String(g.opacity);
     this.opacityRead.textContent = `${Math.round(g.opacity * 100)}%`;
     this.opacityIn.style.setProperty('--fill', `${g.opacity * 100}%`);

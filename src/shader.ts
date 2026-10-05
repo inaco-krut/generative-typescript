@@ -74,6 +74,8 @@ uniform float uGOut[MAXG];    // per glyph: outline thickness in short-side unit
 uniform vec3 uGFill[MAXG];    // per glyph: fill colour
 uniform vec3 uGStroke[MAXG];  // per glyph: outline colour
 uniform float uGOp[MAXG];     // per glyph: opacity
+uniform highp sampler2DArray uImgArr; // colour pixels of imported images, one layer per glyph (premultiplied)
+uniform float uGImg[MAXG];    // per glyph: 1 = draw the image's own colours
 ${noiseGLSL}
 
 float sampleGlyph(int i, vec2 c) {
@@ -81,15 +83,20 @@ float sampleGlyph(int i, vec2 c) {
   return mix(texture(uFromArr, p).r, texture(uToArr, p).r, uGMorph[i]);
 }
 
-float glyphOne(int i, vec2 q) {
+// Where world point q lands in glyph i's own texture space (after warp, move, rotate, skew and stretch).
+vec2 glyphUV(int i, vec2 q) {
   if (uGWarp[i] > 0.001) {
     vec3 wp = vec3(q * uShapeWarpScale + 3.7 + float(i) * 1.7, uTime * uShapeWarpSpeed);
     q += uGWarp[i] * 0.05 * vec2(snoise(wp), snoise(wp + vec3(7.1, 3.3, 0.0)));
   }
-  float sz = uGSize[i];
   vec4 m = uGXform[i];
-  vec2 pp = (q - uGPos[i]) / sz;
-  vec2 uv = vec2(m.x * pp.x + m.y * pp.y, m.z * pp.x + m.w * pp.y) + 0.5;
+  vec2 pp = (q - uGPos[i]) / uGSize[i];
+  return vec2(m.x * pp.x + m.y * pp.y, m.z * pp.x + m.w * pp.y) + 0.5;
+}
+
+float glyphOne(int i, vec2 q) {
+  float sz = uGSize[i];
+  vec2 uv = glyphUV(i, q);
   vec2 c = clamp(uv, 0.0, 1.0);
   float d;
   if (uGSoft[i] > 0.001) {
@@ -124,13 +131,15 @@ float glyphDist(vec2 q) {
 // What is drawn for the letters at this pixel: rgb = colour, a = coverage * opacity. Solid glyphs are filled with
 // their own colour (where glyphs fuse, colours cross-fade by closeness), outlined glyphs keep a band of thickness
 // uGOut just inside their edge in their outline colour. cover = coverage regardless of opacity.
+// imgFrac = how much of the fill is an imported picture.
 // (Distance queries elsewhere still use the whole letter shape.)
-vec4 glyphPaint(vec2 q, out float cover) {
+vec4 glyphPaint(vec2 q, out float cover, out float imgFrac) {
   float k = uBlend * 0.25;
   float best = 1e3;
   vec3 cs = vec3(0.0);
   float os = 0.0;
   float ws = 0.0;
+  float iw = 0.0; // weight of glyphs drawn from an imported picture
   vec3 ringRGB = vec3(0.0); // premultiplied
   float ringA = 0.0;
   float ringCover = 0.0;
@@ -147,7 +156,14 @@ vec4 glyphPaint(vec2 q, out float cover) {
     } else {
       best = k > 0.0001 ? smin(best, d, k) : min(best, d);
       float w = exp(-clamp(d, -0.5, 4.0) * 120.0);
-      cs += uGFill[i] * w;
+      vec3 fillC = uGFill[i];
+      if (uGImg[i] > 0.5) {
+        // imported picture: its own colours (stored premultiplied, so edges do not pick up a dark fringe)
+        vec4 t = texture(uImgArr, vec3(clamp(glyphUV(i, q), 0.0, 1.0), float(i)));
+        fillC = t.rgb / max(t.a, 1e-3);
+      }
+      cs += fillC * w;
+      if (uGImg[i] > 0.5) iw += w;
       os += uGOp[i] * w;
       ws += w;
     }
@@ -158,6 +174,7 @@ vec4 glyphPaint(vec2 q, out float cover) {
   vec3 cF = any ? cs / ws : vec3(0.0);
   float aF = covF * (any ? os / ws : 0.0);
   cover = max(covF, ringCover);
+  imgFrac = any ? iw / ws : 0.0; // share of the fill that comes from pictures (they are drawn above the contour lines)
   float aT = ringA + aF * (1.0 - ringA);
   vec3 rgb = (ringRGB + cF * aF * (1.0 - ringA)) / max(aT, 1e-5);
   return vec4(rgb, aT);
@@ -273,8 +290,9 @@ vec3 lookTopo(float d, float H) {
 
   // glyph fill (or outline)
   float cv;
-  vec4 gp = glyphPaint((gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y), cv);
-  col = mix(col, gp.rgb, gp.a);
+  float imf;
+  vec4 gp = glyphPaint((gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y), cv, imf);
+  col = mix(col, gp.rgb, gp.a * (1.0 - imf));
 
   // contours
   float minor = lineMask(dist, fw, uLineW);
@@ -284,6 +302,7 @@ vec3 lookTopo(float d, float H) {
   major *= knock;
   col = mix(col, uInk, minor * (1.0 - isIndex) * 0.9);
   col = mix(col, uIndex, major * isIndex);
+  col = mix(col, gp.rgb, gp.a * imf); // pictures sit on top of the contour lines
   return col;
 }
 
@@ -400,7 +419,8 @@ void main() {
   if (uLook != 0) {
     // the letters' fill sits on top of the other looks
     float cv;
-    vec4 gp = glyphPaint(q, cv);
+    float imf;
+    vec4 gp = glyphPaint(q, cv, imf);
     col = mix(col, gp.rgb, gp.a);
   }
 
@@ -458,7 +478,8 @@ void main() {
   // glyph areas stay sharp: always with blur, fading in with the letter fill for the glass alone
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
   float cv;
-  vec4 gp = glyphPaint(q, cv);
+  float imf;
+  vec4 gp = glyphPaint(q, cv, imf);
   float excl = mix(clamp(gp.a * 4.0, 0.0, 1.0), cv, blurMix());
 
   vec3 col;
@@ -748,7 +769,8 @@ ${glyphGLSL}
 void main() {
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
   float cv;
-  vec4 gp = glyphPaint(q, cv);
+  float imf;
+  vec4 gp = glyphPaint(q, cv, imf);
   gl_FragColor = vec4(mix(uPaper, gp.rgb, gp.a), 1.0);
 }
 `;

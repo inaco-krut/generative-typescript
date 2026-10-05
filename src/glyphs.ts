@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SDF_SIZE } from './glyph';
+import { IMG_SIZE, SDF_SIZE } from './glyph';
 
 export const MAX_GLYPHS = 8;
 const N = SDF_SIZE;
@@ -31,6 +31,9 @@ export function boundsOf(sdf: Float32Array): Bounds | null {
 export class GlyphStore {
   readonly fromTex: THREE.DataArrayTexture;
   readonly toTex: THREE.DataArrayTexture;
+  /** Colour pixels of imported images, one layer per glyph (premultiplied RGBA). */
+  readonly imgTex: THREE.DataArrayTexture;
+  private imgData: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(IMG_SIZE * IMG_SIZE * 4 * MAX_GLYPHS));
   /** CPU copies of the current SDFs and bounds (hit tests, keeping details clear of glyphs). */
   readonly sdf: (Float32Array | null)[] = Array.from({ length: MAX_GLYPHS }, () => null);
   readonly bounds: Bounds[] = Array.from({ length: MAX_GLYPHS }, () => ({ ...defaultBounds }));
@@ -52,6 +55,13 @@ export class GlyphStore {
     };
     this.fromTex = make(this.fromData);
     this.toTex = make(this.toData);
+    const img = new THREE.DataArrayTexture(this.imgData, IMG_SIZE, IMG_SIZE, MAX_GLYPHS);
+    img.format = THREE.RGBAFormat;
+    img.type = THREE.UnsignedByteType;
+    img.minFilter = img.magFilter = THREE.LinearFilter;
+    img.generateMipmaps = false;
+    img.needsUpdate = true;
+    this.imgTex = img;
   }
 
   private write(data: Uint16Array, layer: number, sdf: Float32Array | null): void {
@@ -89,7 +99,15 @@ export class GlyphStore {
     this.toTex.needsUpdate = true;
   }
 
+  /** Put an imported image's colours in a layer. */
+  setImage(layer: number, rgba: Uint8Array): void {
+    this.imgData.set(rgba, layer * IMG_SIZE * IMG_SIZE * 4);
+    this.imgTex.needsUpdate = true;
+  }
+
   clear(layer: number): void {
+    this.imgData.fill(0, layer * IMG_SIZE * IMG_SIZE * 4, (layer + 1) * IMG_SIZE * IMG_SIZE * 4);
+    this.imgTex.needsUpdate = true;
     this.write(this.fromData, layer, null);
     this.write(this.toData, layer, null);
     this.sdf[layer] = null;

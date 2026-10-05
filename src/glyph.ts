@@ -62,11 +62,12 @@ function coverageToSDF(coverage: (i: number) => number): Float32Array {
   return out;
 }
 
-export interface ImportedMask {
-  /** Normalised silhouette: white where the image is opaque, transparent elsewhere (a PNG data URL, SDF_SIZE square). */
+/** Side length of the stored colour image (the shape itself is still a SDF_SIZE distance field). */
+export const IMG_SIZE = 768;
+
+export interface ImportedImage {
+  /** The picture fitted and centred like a text glyph, with its transparency (an IMG_SIZE square image data URL). */
   dataUrl: string;
-  /** True when the image has no transparent pixels, so the whole rectangle is the shape. */
-  opaque: boolean;
 }
 
 async function decode(src: string): Promise<HTMLImageElement> {
@@ -76,46 +77,64 @@ async function decode(src: string): Promise<HTMLImageElement> {
   return img;
 }
 
-/** Reads an image file and keeps only its alpha channel, fitted and centred like a text glyph. */
-export async function maskFromFile(file: Blob, fill = 0.55): Promise<ImportedMask> {
+/** Reads an image file and normalises it: fitted and centred like a text glyph, colours and transparency kept. */
+export async function importImage(file: Blob, fill = 0.55): Promise<ImportedImage> {
   const url = URL.createObjectURL(file);
   try {
     const img = await decode(url);
-    const n = SDF_SIZE;
+    const n = IMG_SIZE;
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
     const scale = (fill * n) / Math.max(w, h, 1);
     const c = document.createElement('canvas');
     c.width = c.height = n;
-    const ctx = c.getContext('2d', { willReadFrequently: true })!;
+    const ctx = c.getContext('2d')!;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, (n - w * scale) / 2, (n - h * scale) / 2, w * scale, h * scale);
-    const px = ctx.getImageData(0, 0, n, n);
-    let inside = 0;
-    let solid = 0;
-    for (let i = 0; i < n * n; i++) {
-      const a = px.data[i * 4 + 3];
-      if (a > 8) inside++;
-      if (a > 247) solid++;
-      px.data[i * 4] = px.data[i * 4 + 1] = px.data[i * 4 + 2] = 255;
-    }
-    ctx.putImageData(px, 0, 0);
-    return { dataUrl: c.toDataURL('image/png'), opaque: inside > 0 && solid / inside > 0.985 && Math.abs(inside / (w * scale * h * scale) - 1) < 0.02 };
+    // WebP keeps the transparency at a fraction of the size of PNG (browsers without it fall back to PNG)
+    let dataUrl = c.toDataURL('image/webp', 0.92);
+    if (!dataUrl.startsWith('data:image/webp')) dataUrl = c.toDataURL('image/png');
+    return { dataUrl };
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-/** Signed distance field for a stored silhouette (see maskFromFile). */
-export async function renderMaskSDF(dataUrl: string): Promise<Float32Array> {
+export interface DecodedImage {
+  sdf: Float32Array; // shape, from the image's transparency
+  rgba: Uint8Array; // IMG_SIZE x IMG_SIZE, premultiplied, rows bottom-up (ready for a texture)
+}
+
+/** Distance field and colour pixels for a stored image (see importImage). */
+export async function decodeImage(dataUrl: string): Promise<DecodedImage> {
   const img = await decode(dataUrl);
-  const n = SDF_SIZE;
+  const m = IMG_SIZE;
   const c = document.createElement('canvas');
-  c.width = c.height = n;
+  c.width = c.height = m;
   const ctx = c.getContext('2d', { willReadFrequently: true })!;
-  ctx.drawImage(img, 0, 0, n, n);
-  const data = ctx.getImageData(0, 0, n, n).data;
-  return coverageToSDF((i) => data[i * 4 + 3] / 255);
+  ctx.drawImage(img, 0, 0, m, m);
+  const px = ctx.getImageData(0, 0, m, m).data;
+  const rgba = new Uint8Array(m * m * 4);
+  for (let y = 0; y < m; y++) {
+    const src = (m - 1 - y) * m;
+    for (let x = 0; x < m; x++) {
+      const i = (src + x) * 4;
+      const o = (y * m + x) * 4;
+      const a = px[i + 3];
+      rgba[o] = (px[i] * a) / 255;
+      rgba[o + 1] = (px[i + 1] * a) / 255;
+      rgba[o + 2] = (px[i + 2] * a) / 255;
+      rgba[o + 3] = a;
+    }
+  }
+  // the shape comes from the alpha channel at SDF_SIZE
+  const n = SDF_SIZE;
+  const c2 = document.createElement('canvas');
+  c2.width = c2.height = n;
+  const ctx2 = c2.getContext('2d', { willReadFrequently: true })!;
+  ctx2.drawImage(c, 0, 0, n, n);
+  const small = ctx2.getImageData(0, 0, n, n).data;
+  return { sdf: coverageToSDF((i) => small[i * 4 + 3] / 255), rgba };
 }
 
 function boxBlur(a: Float32Array, n: number, r: number): void {
