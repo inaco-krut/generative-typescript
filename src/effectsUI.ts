@@ -37,11 +37,12 @@ export class EffectsPanel {
     });
 
     const body = el('div', 'fx-body-wrap');
-    body.append(el('div', 'fx-section', 'Layers — top is applied last'), this.list);
+    body.append(el('div', 'fx-section', 'Layers'), this.list);
 
     const galleryHead = el('div', 'fx-section');
-    galleryHead.append(el('span', undefined, 'Gallery — click to add'));
-    const refresh = el('button', 'fx-mini', 'refresh previews');
+    galleryHead.append(el('span', undefined, 'Add effect'));
+    const refresh = el('button', 'fx-mini', 'Refresh');
+    refresh.title = 'Re-render the previews from the current artwork';
     refresh.addEventListener('click', () => this.host.requestThumbs());
     galleryHead.append(refresh);
     body.append(galleryHead, this.gallery);

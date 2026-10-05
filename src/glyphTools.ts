@@ -1,5 +1,5 @@
 // Floating readout that follows the selected glyph: solid/outline toggle and outline thickness.
-// Styled as an instrument panel (monospace, hairlines, corner brackets, tick-marked slider).
+// Matches the rest of the UI: rounded surface, segmented control, slim slider with a readout.
 
 export interface GlyphToolsHost {
   get(): { index: number; text: string; size: number; outline: boolean; outlineW: number; shortSide: number } | null;
@@ -21,8 +21,8 @@ export class GlyphTools {
   readonly root = el('div');
   private idEl = el('span', 'gt-id');
   private sizeEl = el('span', 'gt-size');
-  private solidBtn = el('button', 'gt-seg', 'SOLID');
-  private lineBtn = el('button', 'gt-seg', 'OUTLINE');
+  private solidBtn = el('button', 'gt-seg', 'Solid');
+  private lineBtn = el('button', 'gt-seg', 'Outline');
   private slider = el('input');
   private readout = el('output', 'gt-read');
   private strokeRow = el('div', 'gt-row');
@@ -31,7 +31,6 @@ export class GlyphTools {
     const r = this.root;
     r.id = 'glyph-tools';
     r.hidden = true;
-    for (const c of ['tl', 'tr', 'bl', 'br']) r.append(el('i', `gt-c ${c}`));
 
     const head = el('div', 'gt-head');
     head.append(this.idEl, this.sizeEl);
@@ -39,7 +38,7 @@ export class GlyphTools {
     const modeRow = el('div', 'gt-row');
     const seg = el('div', 'gt-segs');
     seg.append(this.solidBtn, this.lineBtn);
-    modeRow.append(el('span', 'gt-label', 'RENDER'), seg);
+    modeRow.append(el('span', 'gt-label', 'Fill'), seg);
 
     this.slider.type = 'range';
     this.slider.min = String(MIN_W);
@@ -47,7 +46,7 @@ export class GlyphTools {
     this.slider.step = '0.0005';
     this.slider.className = 'gt-slider';
     this.slider.title = 'outline thickness';
-    this.strokeRow.append(el('span', 'gt-label', 'STROKE'), this.slider, this.readout);
+    this.strokeRow.append(el('span', 'gt-label', 'Thickness'), this.slider, this.readout);
 
     r.append(head, modeRow, this.strokeRow);
 
@@ -64,15 +63,14 @@ export class GlyphTools {
     this.root.hidden = !g || !box;
     if (!g || !box) return;
 
-    this.idEl.textContent = `GLYPH ${String(g.index + 1).padStart(2, '0')} · ${g.text.trim().slice(0, 10).toUpperCase() || '—'}`;
-    this.sizeEl.textContent = `×${g.size.toFixed(2)}`;
+    this.idEl.textContent = `Glyph ${g.index + 1} · ${g.text.trim().slice(0, 10) || '—'}`;
+    this.sizeEl.textContent = `${g.size.toFixed(2)}×`;
     this.solidBtn.classList.toggle('on', !g.outline);
     this.lineBtn.classList.toggle('on', g.outline);
     this.strokeRow.classList.toggle('off', !g.outline);
     this.slider.disabled = !g.outline;
     if (Number(this.slider.value) !== g.outlineW) this.slider.value = String(g.outlineW);
-    this.readout.textContent = `${(g.outlineW * g.shortSide).toFixed(1).padStart(4, '0')}PX`;
-    // tick marks scale with the slider range
+    this.readout.textContent = `${(g.outlineW * g.shortSide).toFixed(0)} px`;
     this.slider.style.setProperty('--fill', `${((g.outlineW - MIN_W) / (MAX_W - MIN_W)) * 100}%`);
 
     // sit just below the selection box; flip above it when there is no room

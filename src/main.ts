@@ -530,6 +530,8 @@ function applyPalette(): void {
   uniforms.uLow.value.set(p.low);
   uniforms.uMid.value.set(p.mid);
   uniforms.uHigh.value.set(p.high);
+  if (params.fillAuto) params.fillColor = p.index;
+  if (params.textAuto) params.textFill = p.index;
   syncFillColor();
   document.body.style.background = p.paper;
 }
@@ -598,7 +600,8 @@ function syncUniforms(): void {
 // ---------------------------------------------------------------- GUI
 
 (window as unknown as { __params: typeof params }).__params = params; // handy for scripted tests
-const gui = new GUI({ title: 'Typographic Topography' });
+const gui = new GUI({ title: 'Typographic Topography', width: 304 });
+gui.domElement.classList.add('ui-modern');
 const glyphPick = { glyph: 0 };
 // lil-gui swallows key presses while one of its buttons has focus, which would block typing and shortcuts
 gui.domElement.addEventListener('click', (e) => {
@@ -627,12 +630,21 @@ function applyPreset(name: string): void {
   refreshGui();
   panel.rebuild();
   relabelLook(false);
-  fillCtl.disable(params.textAuto);
-  letterColorCtl.disable(params.fillAuto);
+  normaliseLabels();
+  applyVisibility();
+  refreshGui();
   void rebuildAll(true);
 }
-const presetCtl = gui.add(presetState, 'preset', allPresetNames()).name('preset').onChange(applyPreset);
-const nameCtl = gui.add(presetState, 'name').name('save as…');
+const tip = <T extends { domElement: HTMLElement }>(c: T, text: string): T => {
+  c.domElement.title = text;
+  return c;
+};
+const presetCtl = tip(gui.add(presetState, 'preset', allPresetNames()).name('Preset').onChange(applyPreset), 'Start from a saved look');
+tip(gui.add(params, 'animate').name('Motion'), 'Pause to see map labels, resume to animate');
+const quick = { shuffle: () => actions.randomize() };
+tip(gui.add(quick, 'shuffle').name('Shuffle terrain & palette'), 'Random seed, scale and palette (or press space)');
+const gPresets = gui.addFolder('Save presets').close();
+const nameCtl = gPresets.add(presetState, 'name').name('Name');
 
 const presetActions = {
   save() {
@@ -660,8 +672,8 @@ const presetActions = {
     applyPreset('Default');
   },
 };
-gui.add(presetActions, 'save').name('save preset');
-gui.add(presetActions, 'remove').name('delete selected preset');
+gPresets.add(presetActions, 'save').name('Save current look');
+gPresets.add(presetActions, 'remove').name('Delete selected preset');
 
 // The panel edits one glyph at a time (the active one); these accessors forward to it.
 const activeGlyph = () => params.glyphs[activeIdx] ?? params.glyphs[0];
@@ -700,6 +712,7 @@ function refreshGlyphPicker(): void {
   const opts: Record<string, number> = {};
   params.glyphs.forEach((_, i) => (opts[glyphLabel(i)] = i));
   glyphPickCtl.options(opts);
+  applyVisibility();
   refreshGui();
 }
 
@@ -741,40 +754,51 @@ const glyphActions = {
   },
 };
 
-const gGlyph = gui.addFolder('Glyphs');
-const glyphPickCtl = gGlyph
-  .add(glyphPick, 'glyph', { '1: R&D': 0 })
-  .name('editing')
-  .onChange((i: number) => {
-    activeIdx = i;
-    selectedIdx = i;
-    refreshGui();
-  });
-gGlyph.add(glyphActions, 'add').name('add glyph');
-gGlyph.add(glyphActions, 'remove').name('delete this glyph');
-gGlyph
-  .add(active, 'text')
-  .name('character(s)')
-  .onFinishChange(() => {
-    void loadGlyph(activeIdx, true);
-    refreshGlyphPicker();
-  });
-const fontCtl = gGlyph.add(active, 'font', fonts.map((f) => f.family)).onChange(() => void loadGlyph(activeIdx, true));
-gGlyph.add(active, 'size', 0.2, 4, 0.01).name('glyph size');
-gGlyph.add(active, 'posX', -1.5, 1.5, 0.001).name('position x');
-gGlyph.add(active, 'posY', -1.5, 1.5, 0.001).name('position y');
-gGlyph.add(active, 'rot', -180, 180, 0.5).name('rotation');
-gGlyph.add(active, 'skew', -0.8, 0.8, 0.005).name('skew');
-gGlyph.add(active, 'stretch', 0.3, 3, 0.01).name('stretch');
-gGlyph.add(active, 'outline').name('outline only');
-gGlyph.add(active, 'outlineW', 0.002, 0.05, 0.0005).name('outline thickness');
-gGlyph.add(glyphActions, 'reset').name('reset position, size & shape');
-gGlyph.add(active, 'text2').name('morph to (text)').onFinishChange(() => void loadGlyph(activeIdx, false));
-gGlyph.add(active, 'morph', 0, 1, 0.001).name('morph amount');
-gGlyph.add(params, 'mode', MODES).name('letters act as');
-gGlyph.add(params, 'influence', 0.02, 0.8, 0.01).name('influence radius');
-gGlyph.add(params, 'slope', 0, 3, 0.01).name('glyph relief');
-gGlyph.add(params, 'wobble', 0, 1, 0.01).name('terrain at edge');
+// ---- visibility: hide controls that do not apply to the current look
+const visRules: { show: (v: boolean) => unknown; when: () => boolean }[] = [];
+const showWhen = <T extends { show: (v: boolean) => unknown }>(c: T, when: () => boolean): T => {
+  visRules.push({ show: (v) => c.show(v), when });
+  return c;
+};
+function applyVisibility(): void {
+  for (const r of visRules) r.show(r.when());
+}
+const isTopo = () => params.look === 0;
+const isSea = () => params.look === 5;
+
+const gGlyph = gui.addFolder('Glyph');
+const glyphPickCtl = showWhen(
+  gGlyph
+    .add(glyphPick, 'glyph', { '1: R&D': 0 })
+    .name('Editing')
+    .onChange((i: number) => {
+      activeIdx = i;
+      selectedIdx = i;
+      refreshGui();
+    }),
+  () => params.glyphs.length > 1,
+);
+tip(
+  gGlyph
+    .add(active, 'text')
+    .name('Text')
+    .onFinishChange(() => {
+      void loadGlyph(activeIdx, true);
+      refreshGlyphPicker();
+    }),
+  'Type here, or just type anywhere on the canvas',
+);
+const fontCtl = gGlyph.add(active, 'font', fonts.map((f) => f.family)).name('Font').onChange(() => void loadGlyph(activeIdx, true));
+tip(gGlyph.add(active, 'size', 0.2, 4, 0.01).name('Size'), 'Or drag a corner handle / scroll on the selected glyph');
+gGlyph.add(active, 'rot', -180, 180, 0.5).name('Rotation');
+gGlyph.add(glyphActions, 'add').name('+ Add glyph');
+showWhen(gGlyph.add(glyphActions, 'remove').name('− Delete this glyph'), () => params.glyphs.length > 1);
+const gXf = gGlyph.addFolder('Skew, stretch & morph').close();
+gXf.add(active, 'skew', -0.8, 0.8, 0.005).name('Skew');
+gXf.add(active, 'stretch', 0.3, 3, 0.01).name('Stretch');
+tip(gXf.add(active, 'text2').name('Morph to').onFinishChange(() => void loadGlyph(activeIdx, false)), 'A second text to blend towards');
+gXf.add(active, 'morph', 0, 1, 0.001).name('Morph amount');
+gXf.add(glyphActions, 'reset').name('Reset transform');
 
 // How the landscape is drawn. The three sliders mean different things per look.
 const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, 'Particle sea': 5 } as const;
@@ -810,9 +834,10 @@ const lookDefs: Record<number, (LookSlider | null)[]> = {
 };
 
 const gLook = gui.addFolder('Look');
-const lookCtl = gLook.add(params, 'look', LOOKS).name('draw the landscape as');
+const lookCtl = gLook.add(params, 'look', LOOKS).name('Style');
 const lookKeys: LookKey[] = ['lookA', 'lookB', 'lookC', 'lookD'];
 const lookSliders = lookKeys.map((key) => gLook.add(params, key, 0, 1, 0.01));
+showWhen(gLook.add(params, 'lineWidth', 0.3, 4, 0.05).name('Line / dot weight'), () => params.look !== 2);
 function relabelLook(resetValues: boolean): void {
   const defs = lookDefs[params.look] ?? lookDefs[0];
   lookSliders.forEach((c, i) => {
@@ -827,55 +852,82 @@ function relabelLook(resetValues: boolean): void {
 lookCtl.onChange(() => {
   relabelLook(true);
   if (params.look === 5 && params.fill < 0.3) params.fill = 0.9; // the sea draws the letters through the letter fill
+  applyVisibility();
   refreshGui();
 });
 relabelLook(false);
 
-const gShape = gui.addFolder('Letter shape');
-gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('blend letters together');
-gShape.add(params, 'shapeSoft', 0, 1, 0.005).name('soften corners');
-gShape.add(params, 'shapeGrow', -0.05, 0.08, 0.001).name('weight (thin ↔ bold)');
-gShape.add(params, 'shapeWarp', 0, 1, 0.005).name('warp letterforms');
-gShape.add(params, 'shapeWarpScale', 0.5, 12, 0.05).name('warp scale');
-gShape.add(params, 'shapeWarpSpeed', 0, 1, 0.005).name('warp speed');
+const gLand = gui.addFolder('Landscape');
+showWhen(gLand.add(params, 'mode', MODES).name('Letters act as'), () => !isSea());
+tip(gLand.add(params, 'influence', 0.02, 0.8, 0.01).name('Reach'), 'How far from the letters the landscape is reshaped');
+showWhen(gLand.add(params, 'slope', 0, 3, 0.01).name('Relief'), () => !isSea());
+showWhen(gLand.add(params, 'rough', 0, 1.5, 0.01).name('Roughness'), () => !isSea());
+gLand.add(params, 'freq', 0.3, 8, 0.01).name('Scale');
+gLand.add(params, 'warp', 0, 2, 0.01).name('Turbulence');
+gLand.add(params, 'drift', 0, 0.3, 0.001).name('Evolution speed');
+gLand.add(params, 'seed', 0, 10, 0.001).name('Seed');
+showWhen(gLand.add(params, 'spacing', 0.004, 0.06, 0.001).name('Interval'), () => params.look === 0 || params.look === 2);
 
-const gTerrain = gui.addFolder('Terrain');
-gTerrain.add(params, 'rough', 0, 1.5, 0.01).name('roughness');
-gTerrain.add(params, 'freq', 0.3, 8, 0.01).name('scale');
-gTerrain.add(params, 'warp', 0, 2, 0.01).name('domain warp');
-gTerrain.add(params, 'drift', 0, 0.3, 0.001).name('drift speed');
-gTerrain.add(params, 'seed', 0, 10, 0.001);
+const gShape = gui.addFolder('Letter shape').close();
+tip(gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('Blend letters'), 'Fuses neighbouring letters into one shape');
+gShape.add(params, 'shapeSoft', 0, 1, 0.005).name('Soften corners');
+gShape.add(params, 'shapeGrow', -0.05, 0.08, 0.001).name('Weight');
+gShape.add(params, 'shapeWarp', 0, 1, 0.005).name('Warp');
 
-const gLines = gui.addFolder('Contours');
-gLines.add(params, 'spacing', 0.004, 0.06, 0.001).name('interval');
-gLines.add(params, 'lineWidth', 0.3, 4, 0.05).name('line width');
+const gColor = gui.addFolder('Colour & finish').close();
+gColor
+  .add(params, 'palette', paletteNames)
+  .name('Palette')
+  .onChange(() => {
+    applyPalette();
+    refreshGui();
+  });
+gColor.add(params, 'fill', 0, 1, 0.01).name('Letter fill');
+tip(
+  gColor
+    .addColor(params, 'fillColor')
+    .name('Letter colour')
+    .onChange(() => {
+      params.fillAuto = false; // a hand-picked colour stops following the palette
+    }),
+  'Follows the palette until you pick your own',
+);
+showWhen(gColor.add(params, 'tint', 0, 1, 0.01).name('Elevation tint'), () => [0, 2, 3, 4].includes(params.look));
+showWhen(gColor.add(params, 'shade', 0, 1, 0.01).name('Hillshade'), isTopo);
+gColor.add(params, 'grain', 0, 0.2, 0.001).name('Grain');
+gColor.add(params, 'blur', 0, 1, 0.01).name('Background blur');
+gColor
+  .add(params, 'glass', 0, 1, 0.01)
+  .name('Glass')
+  .onChange(() => applyVisibility());
+showWhen(gColor.add(params, 'glassLight', 0, 1, 0.01).name('Glass light'), () => params.glass > 0.001);
 
-const gDetail = gui.addFolder('Detail layer (animation off)');
-gDetail.add(params, 'details').name('show when paused');
-gDetail.add(params, 'showLabels').name('elevation labels');
-gDetail.add(params, 'showSpots').name('spot heights');
-gDetail.add(params, 'showNotes').name('annotations');
-gDetail.add(params, 'labelStep', 10, 500, 1).name('metres per line');
-gDetail.add(params, 'labelBase', 0, 3000, 1).name('base elevation (m)');
-gDetail.add(params, 'labelSize', 6, 16, 0.5).name('label size');
-const fillCtl = gDetail.addColor(params, 'textFill').name('text fill (custom)');
-gDetail.add(params, 'textAuto').name('text fill from palette').onChange((auto: boolean) => fillCtl.disable(auto));
-fillCtl.disable(params.textAuto);
-gDetail.add(params, 'words').name('words');
-gDetail.add(params, 'caption').name('caption');
+const gLabels = showWhen(gui.addFolder('Map labels (when paused)').close(), isTopo);
+const syncDetails = () => {
+  params.details = params.showLabels || params.showSpots || params.showNotes;
+};
+gLabels.add(params, 'showLabels').name('Elevation numbers').onChange(syncDetails);
+gLabels.add(params, 'showSpots').name('Peak heights').onChange(syncDetails);
+gLabels.add(params, 'showNotes').name('Notes & icons').onChange(syncDetails);
+gLabels.add(params, 'labelSize', 6, 16, 0.5).name('Size');
+gLabels.add(params, 'words').name('Words');
+gLabels.add(params, 'caption').name('Caption');
+tip(
+  gLabels
+    .addColor(params, 'textFill')
+    .name('Colour')
+    .onChange(() => {
+      params.textAuto = false;
+    }),
+  'Follows the palette until you pick your own',
+);
 
-const gStyle = gui.addFolder('Style');
-gStyle.add(params, 'palette', paletteNames).onChange(applyPalette);
-gStyle.add(params, 'tint', 0, 1, 0.01).name('elevation tint');
-gStyle.add(params, 'shade', 0, 1, 0.01).name('hillshade');
-gStyle.add(params, 'grain', 0, 0.2, 0.001).name('paper grain');
-gStyle.add(params, 'glass', 0, 1, 0.01).name('glass overlay');
-gStyle.add(params, 'glassLight', 0, 1, 0.01).name('glass light streak');
-gStyle.add(params, 'blur', 0, 1, 0.01).name('background blur');
-gStyle.add(params, 'fill', 0, 1, 0.01).name('letter fill');
-const letterColorCtl = gStyle.addColor(params, 'fillColor').name('letter fill colour');
-gStyle.add(params, 'fillAuto').name('letter fill from palette').onChange((auto: boolean) => letterColorCtl.disable(auto));
-letterColorCtl.disable(params.fillAuto);
+/** The three label toggles are the truth; older presets used a separate master switch. */
+function normaliseLabels(): void {
+  if (!params.details) params.showLabels = params.showSpots = params.showNotes = false;
+  syncDetails();
+}
+normaliseLabels();
 
 const actions = {
   randomize() {
@@ -911,11 +963,12 @@ const actions = {
     );
   },
 };
-gui.add(params, 'animate').name('animate (off = details)');
-gui.add(actions, 'randomize').name('randomize (space)');
-gui.add(actions, 'uploadFont').name('upload font…');
-gui.add(actions, 'savePNG').name('save PNG');
-gui.add(actions, 'copySettings').name('copy settings (JSON)');
+
+const gExport = gui.addFolder('Export & tools').close();
+gExport.add(actions, 'savePNG').name('Save image (PNG)');
+gExport.add(actions, 'copySettings').name('Copy settings (JSON)');
+gExport.add(actions, 'uploadFont').name('Upload font…');
+applyVisibility();
 
 const fileInput = document.getElementById('font-file') as HTMLInputElement;
 fileInput.addEventListener('change', async () => {
