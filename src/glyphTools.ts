@@ -2,9 +2,14 @@
 // Matches the rest of the UI: rounded surface, segmented control, slim slider with a readout.
 
 export interface GlyphToolsHost {
-  get(): { index: number; text: string; size: number; outline: boolean; outlineW: number; shortSide: number } | null;
+  get(): {
+    index: number; text: string; size: number; outline: boolean; outlineW: number; shortSide: number;
+    color: string; opacity: number;
+  } | null;
   setOutline(on: boolean): void;
   setThickness(w: number): void;
+  setColor(hex: string): void;
+  setOpacity(v: number): void;
 }
 
 const MIN_W = 0.002;
@@ -26,6 +31,9 @@ export class GlyphTools {
   private slider = el('input');
   private readout = el('output', 'gt-read');
   private strokeRow = el('div', 'gt-row');
+  private colorIn = el('input');
+  private opacityIn = el('input');
+  private opacityRead = el('output', 'gt-read');
 
   constructor(private host: GlyphToolsHost) {
     const r = this.root;
@@ -48,11 +56,28 @@ export class GlyphTools {
     this.slider.title = 'outline thickness';
     this.strokeRow.append(el('span', 'gt-label', 'Thickness'), this.slider, this.readout);
 
-    r.append(head, modeRow, this.strokeRow);
+    this.colorIn.type = 'color';
+    this.colorIn.className = 'gt-color';
+    this.colorIn.title = 'colour of this glyph';
+    const colorRow = el('div', 'gt-row');
+    colorRow.append(el('span', 'gt-label', 'Colour'), this.colorIn);
+
+    this.opacityIn.type = 'range';
+    this.opacityIn.min = '0';
+    this.opacityIn.max = '1';
+    this.opacityIn.step = '0.01';
+    this.opacityIn.className = 'gt-slider';
+    this.opacityIn.title = 'opacity';
+    const opacityRow = el('div', 'gt-row');
+    opacityRow.append(el('span', 'gt-label', 'Opacity'), this.opacityIn, this.opacityRead);
+
+    r.append(head, modeRow, colorRow, opacityRow, this.strokeRow);
 
     this.solidBtn.addEventListener('click', () => host.setOutline(false));
     this.lineBtn.addEventListener('click', () => host.setOutline(true));
     this.slider.addEventListener('input', () => host.setThickness(Number(this.slider.value)));
+    this.colorIn.addEventListener('input', () => host.setColor(this.colorIn.value));
+    this.opacityIn.addEventListener('input', () => host.setOpacity(Number(this.opacityIn.value)));
     // never let clicks on the panel reach the canvas (that would deselect the glyph)
     r.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
@@ -71,6 +96,10 @@ export class GlyphTools {
     this.slider.disabled = !g.outline;
     if (Number(this.slider.value) !== g.outlineW) this.slider.value = String(g.outlineW);
     this.readout.textContent = `${(g.outlineW * g.shortSide).toFixed(0)} px`;
+    if (this.colorIn.value !== g.color.toLowerCase()) this.colorIn.value = g.color;
+    if (Number(this.opacityIn.value) !== g.opacity) this.opacityIn.value = String(g.opacity);
+    this.opacityRead.textContent = `${Math.round(g.opacity * 100)}%`;
+    this.opacityIn.style.setProperty('--fill', `${g.opacity * 100}%`);
     this.slider.style.setProperty('--fill', `${((g.outlineW - MIN_W) / (MAX_W - MIN_W)) * 100}%`);
 
     // sit just below the selection box; flip above it when there is no room

@@ -14,6 +14,14 @@ export interface GlyphDef {
   outline: boolean; // draw only an outline instead of a solid fill
   outlineW: number; // outline thickness, short-side units
   image: string; // imported silhouette (PNG data URL); when set it replaces the text
+  // appearance, per glyph
+  color: string; // fill colour; '' follows the palette
+  strokeColor: string; // outline colour; '' = same as the fill colour
+  opacity: number; // 0 = not filled in, 1 = solid
+  // shape, per glyph
+  grow: number; // weight: > 0 bolder, < 0 thinner
+  soft: number; // corner softening
+  warp: number; // noise warp of the letterform
 }
 
 export interface Params {
@@ -26,11 +34,8 @@ export interface Params {
   lookB: number;
   lookC: number;
   lookD: number;
-  // letter shape (all glyphs)
+  // letter shape shared by all glyphs
   shapeBlend: number; // how much neighbouring letters fuse together
-  shapeSoft: number; // corner softening
-  shapeGrow: number; // letter weight
-  shapeWarp: number; // noise warp of the letterforms
   shapeWarpScale: number;
   shapeWarpSpeed: number;
   influence: number;
@@ -50,9 +55,6 @@ export interface Params {
   glass: number; // glass overlay strength, 0 = off
   blur: number; // background blur (everything except the glyphs), 0 = off
   glassLight: number; // brightness of the glass's light streak, rim and edge light (1 = full)
-  fill: number;
-  fillAuto: boolean; // true: letter fill uses the palette's index colour
-  fillColor: string; // custom letter fill colour, used when fillAuto is off
   animate: boolean;
   // static detail layer (shown when animation is off)
   details: boolean;
@@ -70,6 +72,7 @@ export interface Params {
 
 export const defaultGlyph: GlyphDef = {
   text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0, outline: false, outlineW: 0.012, image: '',
+  color: '', strokeColor: '', opacity: 0.9, grow: 0, soft: 0, warp: 0,
 };
 
 export const defaultParams: Params = {
@@ -82,9 +85,6 @@ export const defaultParams: Params = {
   lookC: 0,
   lookD: 0,
   shapeBlend: 0,
-  shapeSoft: 0,
-  shapeGrow: 0,
-  shapeWarp: 0,
   shapeWarpScale: 3,
   shapeWarpSpeed: 0.15,
   influence: 0.3,
@@ -104,9 +104,6 @@ export const defaultParams: Params = {
   glass: 0,
   glassLight: 1,
   blur: 0,
-  fill: 0.0,
-  fillAuto: true,
-  fillColor: '#111111',
   animate: true,
   details: true,
   showLabels: true,
@@ -124,7 +121,18 @@ export const defaultParams: Params = {
 // A preset only lists what differs from the defaults. To add one: tweak the panel, press
 // "copy settings (JSON)", and paste the result here under a new name.
 // Presets (and presets saved by older versions) may still describe a single glyph with top-level fields.
-export type PresetData = Omit<Partial<Params>, 'glyphs'> & Partial<GlyphDef> & { glyphs?: Partial<GlyphDef>[] };
+// Older presets also carried shared appearance/shape settings; they are turned into per-glyph values on load.
+interface LegacyShared {
+  fill?: number;
+  fillAuto?: boolean;
+  fillColor?: string;
+  shapeSoft?: number;
+  shapeGrow?: number;
+  shapeWarp?: number;
+}
+export type PresetData = Omit<Partial<Params>, 'glyphs'> &
+  Partial<GlyphDef> &
+  LegacyShared & { glyphs?: Partial<GlyphDef>[] };
 
 export const presets: Record<string, PresetData> = {
   Default: {},
@@ -348,7 +356,7 @@ export function storeUserPresets(all: Record<string, PresetData>): boolean {
 
 /** Turns preset data (current or legacy single-glyph format) into a complete, independent Params object. */
 export function resolvePreset(data: PresetData): Params {
-  const { text, font, size, posX, posY, glyphs, ...rest } = data;
+  const { text, font, size, posX, posY, glyphs, fill, fillAuto, fillColor, shapeSoft, shapeGrow, shapeWarp, ...rest } = data;
   const legacy: Partial<GlyphDef> = {};
   if (text !== undefined) legacy.text = text;
   if (font !== undefined) legacy.font = font;
@@ -356,9 +364,17 @@ export function resolvePreset(data: PresetData): Params {
   if (posX !== undefined) legacy.posX = posX;
   if (posY !== undefined) legacy.posY = posY;
   const list = glyphs && glyphs.length ? glyphs : [legacy];
+  // what an older preset implied for every glyph (they shared one fill and one set of shape settings)
+  const shared: Partial<GlyphDef> = {
+    opacity: fill ?? 0,
+    color: fillAuto === false && fillColor ? fillColor : '',
+    soft: shapeSoft ?? 0,
+    grow: shapeGrow ?? 0,
+    warp: shapeWarp ?? 0,
+  };
   return {
     ...structuredClone(defaultParams),
     ...structuredClone(rest),
-    glyphs: structuredClone(list).map((g) => ({ ...defaultGlyph, ...g })),
+    glyphs: structuredClone(list).map((g) => ({ ...defaultGlyph, ...shared, ...g })),
   };
 }

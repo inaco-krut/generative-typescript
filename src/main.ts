@@ -26,6 +26,12 @@ const gPos = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector2());
 const gSize: number[] = new Array(MAX_GLYPHS).fill(1);
 const gMorph: number[] = new Array(MAX_GLYPHS).fill(1);
 const gOut: number[] = new Array(MAX_GLYPHS).fill(0);
+const gSoft: number[] = new Array(MAX_GLYPHS).fill(0);
+const gGrow: number[] = new Array(MAX_GLYPHS).fill(0);
+const gWarp: number[] = new Array(MAX_GLYPHS).fill(0);
+const gOp: number[] = new Array(MAX_GLYPHS).fill(1);
+const gFill = Array.from({ length: MAX_GLYPHS }, () => new THREE.Color());
+const gStroke = Array.from({ length: MAX_GLYPHS }, () => new THREE.Color());
 const gXform = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector4(1, 0, 0, 1));
 const morphStart: number[] = new Array(MAX_GLYPHS).fill(-1);
 const loadTokens: number[] = new Array(MAX_GLYPHS).fill(0);
@@ -55,9 +61,12 @@ const uniforms = {
   uGXform: { value: gXform },
   uGOut: { value: gOut },
   uBlend: { value: params.shapeBlend },
-  uSoft: { value: params.shapeSoft },
-  uGrow: { value: params.shapeGrow },
-  uShapeWarp: { value: params.shapeWarp },
+  uGSoft: { value: gSoft },
+  uGGrow: { value: gGrow },
+  uGWarp: { value: gWarp },
+  uGFill: { value: gFill },
+  uGStroke: { value: gStroke },
+  uGOp: { value: gOp },
   uShapeWarpScale: { value: params.shapeWarpScale },
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
@@ -80,14 +89,12 @@ const uniforms = {
   uTint: { value: params.tint },
   uShade: { value: params.shade },
   uGrain: { value: params.grain },
-  uFill: { value: params.fill },
   uMask: { value: null as THREE.Texture | null },
   uMaskOn: { value: 0 },
   uOutputH: { value: 0 },
   uPaper: { value: color('#000') },
   uInk: { value: color('#000') },
   uIndex: { value: color('#000') },
-  uFillCol: { value: color('#000') },
   uLow: { value: color('#000') },
   uMid: { value: color('#000') },
   uHigh: { value: color('#000') },
@@ -98,8 +105,9 @@ const glyphUniforms = {
   uTime: uniforms.uTime,
   uFromArr: uniforms.uFromArr, uToArr: uniforms.uToArr, uCount: uniforms.uCount,
   uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform, uGOut: uniforms.uGOut,
-  uBlend: uniforms.uBlend, uSoft: uniforms.uSoft, uGrow: uniforms.uGrow,
-  uShapeWarp: uniforms.uShapeWarp, uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
+  uBlend: uniforms.uBlend, uGSoft: uniforms.uGSoft, uGGrow: uniforms.uGGrow, uGWarp: uniforms.uGWarp,
+  uGFill: uniforms.uGFill, uGStroke: uniforms.uGStroke, uGOp: uniforms.uGOp,
+  uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
 };
 
 const material = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader });
@@ -126,7 +134,6 @@ const postUniforms = {
   uGlass: { value: params.glass },
   uGlassLight: { value: params.glassLight },
   ...glyphUniforms,
-  uFill: uniforms.uFill,
 };
 const postScene = new THREE.Scene();
 postScene.add(
@@ -319,7 +326,7 @@ const seaScene = new THREE.Scene();
 const seaBg = new THREE.Mesh(
   new THREE.PlaneGeometry(2, 2),
   new THREE.ShaderMaterial({
-    uniforms: { uRes: uniforms.uRes, uPaper: uniforms.uPaper, uFillCol: uniforms.uFillCol, uFill: uniforms.uFill, ...glyphUniforms },
+    uniforms: { uRes: uniforms.uRes, uPaper: uniforms.uPaper, ...glyphUniforms },
     vertexShader,
     fragmentShader: seaBackdropFragmentShader,
     depthTest: false,
@@ -576,9 +583,7 @@ function applyPalette(): void {
   uniforms.uLow.value.set(p.low);
   uniforms.uMid.value.set(p.mid);
   uniforms.uHigh.value.set(p.high);
-  if (params.fillAuto) params.fillColor = p.index;
   if (params.textAuto) params.textFill = p.index;
-  syncFillColor();
   document.body.style.background = p.paper;
 }
 
@@ -594,12 +599,11 @@ function glyphMatrices(g: GlyphDef) {
   return { f, inv: [f[3] / det, -f[1] / det, -f[2] / det, f[0] / det] };
 }
 
-function syncFillColor(): void {
-  uniforms.uFillCol.value.set(params.fillAuto ? palettes[params.palette].index : params.fillColor);
-}
+/** A glyph's colours: '' follows the palette; the outline falls back to the fill colour. */
+const glyphFillHex = (g: GlyphDef) => g.color || palettes[params.palette].index;
+const glyphStrokeHex = (g: GlyphDef) => g.strokeColor || glyphFillHex(g);
 
 function syncUniforms(): void {
-  syncFillColor();
   postUniforms.uGlass.value = params.glass;
   postUniforms.uGlassLight.value = params.glassLight;
   postUniforms.uBlur.value = params.blur;
@@ -614,6 +618,12 @@ function syncUniforms(): void {
     const m = glyphMatrices(g).inv;
     gXform[i].set(m[0], m[1], m[2], m[3]);
     gOut[i] = g.outline ? Math.max(g.outlineW, 0.0005) : 0;
+    gSoft[i] = g.soft;
+    gGrow[i] = g.grow;
+    gWarp[i] = g.warp;
+    gOp[i] = g.opacity;
+    gFill[i].set(glyphFillHex(g));
+    gStroke[i].set(glyphStrokeHex(g));
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
   }
   uniforms.uLook.value = params.look;
@@ -622,9 +632,6 @@ function syncUniforms(): void {
   uniforms.uLookC.value = params.lookC;
   uniforms.uLookD.value = params.lookD;
   uniforms.uBlend.value = params.shapeBlend;
-  uniforms.uSoft.value = params.shapeSoft;
-  uniforms.uGrow.value = params.shapeGrow;
-  uniforms.uShapeWarp.value = params.shapeWarp;
   uniforms.uShapeWarpScale.value = params.shapeWarpScale;
   uniforms.uShapeWarpSpeed.value = params.shapeWarpSpeed;
   uniforms.uInfluence.value = params.influence;
@@ -640,7 +647,6 @@ function syncUniforms(): void {
   uniforms.uTint.value = params.tint;
   uniforms.uShade.value = params.shade;
   uniforms.uGrain.value = params.grain;
-  uniforms.uFill.value = params.fill;
 }
 
 // ---------------------------------------------------------------- GUI
@@ -749,6 +755,19 @@ const active = {
   set outline(v: boolean) { activeGlyph().outline = v; },
   get outlineW() { return activeGlyph().outlineW; },
   set outlineW(v: number) { activeGlyph().outlineW = v; },
+  // colours show what is actually drawn (the palette colour while none is chosen)
+  get color() { return glyphFillHex(activeGlyph()); },
+  set color(v: string) { activeGlyph().color = v; },
+  get strokeColor() { return glyphStrokeHex(activeGlyph()); },
+  set strokeColor(v: string) { activeGlyph().strokeColor = v; },
+  get opacity() { return activeGlyph().opacity; },
+  set opacity(v: number) { activeGlyph().opacity = v; },
+  get grow() { return activeGlyph().grow; },
+  set grow(v: number) { activeGlyph().grow = v; },
+  get soft() { return activeGlyph().soft; },
+  set soft(v: number) { activeGlyph().soft = v; },
+  get warp() { return activeGlyph().warp; },
+  set warp(v: number) { activeGlyph().warp = v; },
 };
 
 const glyphLabel = (i: number) => {
@@ -773,6 +792,7 @@ const glyphActions = {
       ...base,
       text: String.fromCharCode(65 + (params.glyphs.length % 26)),
       size: clamp(base.size * 0.6, 0.2, 4),
+      opacity: base.opacity < 0.3 ? 0.9 : base.opacity,
       posX: clamp(base.posX + 0.3, -1.2, 1.2),
       posY: clamp(base.posY - 0.25, -1.2, 1.2),
     });
@@ -798,6 +818,12 @@ const glyphActions = {
     g.text = 'A';
     void loadGlyph(activeIdx, true);
     refreshGlyphPicker();
+  },
+  matchPalette() {
+    const g = activeGlyph();
+    g.color = '';
+    g.strokeColor = '';
+    refreshGui();
   },
   reset() {
     const g = activeGlyph();
@@ -858,6 +884,21 @@ const fontCtl = showWhen(
 );
 tip(gGlyph.add(active, 'size', 0.2, 4, 0.01).name('Size'), 'Or drag a corner handle / scroll on the selected glyph');
 gGlyph.add(active, 'rot', -180, 180, 0.5).name('Rotation');
+
+const gLook2 = gGlyph.addFolder('Appearance');
+tip(gLook2.addColor(active, 'color').name('Colour'), 'Follows the palette until you choose a colour');
+gLook2.add(active, 'opacity', 0, 1, 0.01).name('Opacity');
+gLook2.add(active, 'outline').name('Outline only');
+showWhen(gLook2.add(active, 'outlineW', 0.002, 0.05, 0.0005).name('Outline width'), () => activeGlyph().outline);
+showWhen(gLook2.addColor(active, 'strokeColor').name('Outline colour'), () => activeGlyph().outline);
+showWhen(
+  tip(gLook2.add(glyphActions, 'matchPalette').name('Use palette colours'), 'Go back to the palette colours for this glyph'),
+  () => !!activeGlyph().color || !!activeGlyph().strokeColor,
+);
+const gShape2 = gGlyph.addFolder('Shape').close();
+gShape2.add(active, 'grow', -0.05, 0.08, 0.001).name('Weight');
+gShape2.add(active, 'soft', 0, 1, 0.005).name('Soften corners');
+gShape2.add(active, 'warp', 0, 1, 0.005).name('Warp');
 gGlyph.add(glyphActions, 'add').name('+ Add text glyph');
 tip(gGlyph.add(glyphActions, 'addImage').name('+ Add image…'), 'A PNG with a transparent background; its silhouette becomes a glyph. You can also drop a file on the canvas');
 showWhen(gGlyph.add(glyphActions, 'useText').name('Switch back to text'), isImage);
@@ -868,6 +909,10 @@ gXf.add(active, 'stretch', 0.3, 3, 0.01).name('Stretch');
 showWhen(tip(gXf.add(active, 'text2').name('Morph to').onFinishChange(() => void loadGlyph(activeIdx, false)), 'A second text to blend towards'), () => !isImage());
 showWhen(gXf.add(active, 'morph', 0, 1, 0.001).name('Morph amount'), () => !isImage());
 gXf.add(glyphActions, 'reset').name('Reset transform');
+showWhen(
+  tip(gGlyph.add(params, 'shapeBlend', 0, 1, 0.005).name('Blend glyphs'), 'Fuses neighbouring glyphs into one shape (shared by all)'),
+  () => params.glyphs.length > 1,
+);
 
 // How the landscape is drawn. The three sliders mean different things per look.
 const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, 'Particle sea': 5 } as const;
@@ -920,7 +965,7 @@ function relabelLook(resetValues: boolean): void {
 }
 lookCtl.onChange(() => {
   relabelLook(true);
-  if (params.look === 5 && params.fill < 0.3) params.fill = 0.9; // the sea draws the letters through the letter fill
+  if (params.look === 5) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9; // the sea draws the letters through their fill
   applyVisibility();
   refreshGui();
 });
@@ -937,12 +982,6 @@ gLand.add(params, 'drift', 0, 0.3, 0.001).name('Evolution speed');
 gLand.add(params, 'seed', 0, 10, 0.001).name('Seed');
 showWhen(gLand.add(params, 'spacing', 0.004, 0.06, 0.001).name('Interval'), () => params.look === 0 || params.look === 2);
 
-const gShape = gui.addFolder('Letter shape').close();
-tip(gShape.add(params, 'shapeBlend', 0, 1, 0.005).name('Blend letters'), 'Fuses neighbouring letters into one shape');
-gShape.add(params, 'shapeSoft', 0, 1, 0.005).name('Soften corners');
-gShape.add(params, 'shapeGrow', -0.05, 0.08, 0.001).name('Weight');
-gShape.add(params, 'shapeWarp', 0, 1, 0.005).name('Warp');
-
 const gColor = gui.addFolder('Colour & finish').close();
 gColor
   .add(params, 'palette', paletteNames)
@@ -951,16 +990,6 @@ gColor
     applyPalette();
     refreshGui();
   });
-gColor.add(params, 'fill', 0, 1, 0.01).name('Letter fill');
-tip(
-  gColor
-    .addColor(params, 'fillColor')
-    .name('Letter colour')
-    .onChange(() => {
-      params.fillAuto = false; // a hand-picked colour stops following the palette
-    }),
-  'Follows the palette until you pick your own',
-);
 showWhen(gColor.add(params, 'tint', 0, 1, 0.01).name('Elevation tint'), () => [0, 2, 3, 4].includes(params.look));
 showWhen(gColor.add(params, 'shade', 0, 1, 0.01).name('Hillshade'), isTopo);
 gColor.add(params, 'grain', 0, 0.2, 0.001).name('Grain');
@@ -1066,7 +1095,6 @@ async function addImageGlyph(file: File): Promise<void> {
   activeIdx = selectedIdx = params.glyphs.length - 1;
   void loadGlyph(activeIdx, false);
   refreshGlyphPicker();
-  if (params.fill < 0.3) params.fill = 0.9; // the silhouette is drawn with the letter fill
   refreshGui();
   if (mask.opaque) toast('This image has no transparent area, so it was used as a solid block');
 }
@@ -1194,7 +1222,7 @@ async function computeDetails(key: string): Promise<void> {
         labels: params.showLabels,
         spots: params.showSpots,
         notes: params.showNotes,
-        avoidGlyph: params.fill > 0.3,
+        avoidGlyph: params.glyphs.some((g) => g.opacity > 0.3),
         spacing: params.spacing,
         metersPerLine: params.labelStep,
         baseElevation: params.labelBase,
@@ -1486,6 +1514,9 @@ const glyphTools = new GlyphTools({
     return {
       index: selectedIdx, text: g.image ? 'Image' : g.text, size: g.size, outline: g.outline, outlineW: g.outlineW,
       shortSide: Math.min(uniforms.uRes.value.x, uniforms.uRes.value.y),
+      // in outline mode the colour edits the outline; otherwise the fill
+      color: g.outline ? glyphStrokeHex(g) : glyphFillHex(g),
+      opacity: g.opacity,
     };
   },
   setOutline: (on) => {
@@ -1493,7 +1524,20 @@ const glyphTools = new GlyphTools({
     if (!g) return;
     g.outline = on;
     // the outline is drawn with the letter fill colour; at zero fill it would be invisible
-    if (on && params.fill < 0.3) params.fill = 0.9;
+    if (on && g.opacity < 0.3) g.opacity = 0.9;
+    refreshGui();
+  },
+  setColor: (hex) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    if (g.outline) g.strokeColor = hex;
+    else g.color = hex;
+    refreshGui();
+  },
+  setOpacity: (v) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.opacity = v;
     refreshGui();
   },
   setThickness: (w) => {
