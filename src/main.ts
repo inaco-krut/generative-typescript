@@ -8,7 +8,7 @@ import {
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
 import { EffectsPanel } from './effectsUI';
 import { GlyphTools } from './glyphTools';
-import { renderGlyphSDF } from './glyph';
+import { maskFromFile, renderGlyphSDF, renderMaskSDF } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
@@ -481,10 +481,56 @@ function sdfFor(font: FontDef, text: string): Float32Array {
   return sdf;
 }
 
+let toastTimer = 0;
+function toast(message: string): void {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add('show');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => el?.classList.remove('show'), 4200);
+}
+
+const hashString = (str: string) => {
+  let h = 5381;
+  for (let k = 0; k < str.length; k++) h = ((h << 5) + h + str.charCodeAt(k)) | 0;
+  return `${str.length}:${h}`;
+};
+
+/** Imported silhouettes go through the same distance-field route as text. */
+async function loadImageGlyph(i: number, morph: boolean): Promise<void> {
+  const g = params.glyphs[i];
+  const token = ++loadTokens[i];
+  const key = `img|${hashString(g.image)}`;
+  let sdf = sdfCache.get(key);
+  if (!sdf) {
+    try {
+      sdf = await renderMaskSDF(g.image);
+    } catch {
+      if (token !== loadTokens[i] || !params.glyphs[i]) return;
+      toast('That image could not be read, so the glyph went back to text');
+      g.image = '';
+      return loadGlyph(i, morph);
+    }
+    sdfCache.set(key, sdf);
+    if (sdfCache.size > 32) sdfCache.delete(sdfCache.keys().next().value as string);
+  }
+  if (token !== loadTokens[i] || !params.glyphs[i]) return; // superseded
+  store.set(i, sdf, boundsOf(sdf) ?? { ...defaultBounds }, morph);
+  gMorph[i] = morph ? 0 : 1;
+  morphStart[i] = morph ? performance.now() : -1;
+  sdfVersion++;
+}
+
 /** (Re)build glyph `i`'s distance field from its text and font. */
 async function loadGlyph(i: number, morph: boolean): Promise<void> {
   const g = params.glyphs[i];
   if (!g) return;
+  if (g.image) return loadImageGlyph(i, morph);
   const text = g.text || ' ';
   const text2 = (g.text2 ?? '').trim();
   const font = fonts.find((f) => f.family === g.font) ?? fonts[0];
@@ -611,6 +657,7 @@ gui.domElement.addEventListener('click', (e) => {
 const refreshGui = () => {
   glyphPick.glyph = activeIdx;
   gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  applyVisibility();
 };
 const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(Math.max(v, lo), hi) * 1000) / 1000;
 
@@ -705,8 +752,10 @@ const active = {
 };
 
 const glyphLabel = (i: number) => {
-  const t = params.glyphs[i].text.trim() || '·';
-  return `${i + 1}: ${t.length > 12 ? t.slice(0, 11) + '…' : t}`;
+  const g = params.glyphs[i];
+  const t = g.text.trim() || '·';
+  const name = g.image ? `▣ ${t}` : t;
+  return `${i + 1}: ${name.length > 12 ? name.slice(0, 11) + '…' : name}`;
 };
 function refreshGlyphPicker(): void {
   const opts: Record<string, number> = {};
@@ -737,6 +786,17 @@ const glyphActions = {
     activeIdx = Math.min(activeIdx, params.glyphs.length - 1);
     selectedIdx = -1;
     void rebuildAll(false);
+    refreshGlyphPicker();
+  },
+  addImage() {
+    imageInput.click();
+  },
+  useText() {
+    const g = activeGlyph();
+    if (!g.image) return;
+    g.image = '';
+    g.text = 'A';
+    void loadGlyph(activeIdx, true);
     refreshGlyphPicker();
   },
   reset() {
@@ -778,26 +838,35 @@ const glyphPickCtl = showWhen(
     }),
   () => params.glyphs.length > 1,
 );
-tip(
-  gGlyph
-    .add(active, 'text')
-    .name('Text')
-    .onFinishChange(() => {
-      void loadGlyph(activeIdx, true);
-      refreshGlyphPicker();
-    }),
-  'Type here, or just type anywhere on the canvas',
+const isImage = () => !!activeGlyph().image;
+showWhen(
+  tip(
+    gGlyph
+      .add(active, 'text')
+      .name('Text')
+      .onFinishChange(() => {
+        void loadGlyph(activeIdx, true);
+        refreshGlyphPicker();
+      }),
+    'Type here, or just type anywhere on the canvas',
+  ),
+  () => !isImage(),
 );
-const fontCtl = gGlyph.add(active, 'font', fonts.map((f) => f.family)).name('Font').onChange(() => void loadGlyph(activeIdx, true));
+const fontCtl = showWhen(
+  gGlyph.add(active, 'font', fonts.map((f) => f.family)).name('Font').onChange(() => void loadGlyph(activeIdx, true)),
+  () => !isImage(),
+);
 tip(gGlyph.add(active, 'size', 0.2, 4, 0.01).name('Size'), 'Or drag a corner handle / scroll on the selected glyph');
 gGlyph.add(active, 'rot', -180, 180, 0.5).name('Rotation');
-gGlyph.add(glyphActions, 'add').name('+ Add glyph');
+gGlyph.add(glyphActions, 'add').name('+ Add text glyph');
+tip(gGlyph.add(glyphActions, 'addImage').name('+ Add image…'), 'A PNG with a transparent background; its silhouette becomes a glyph. You can also drop a file on the canvas');
+showWhen(gGlyph.add(glyphActions, 'useText').name('Switch back to text'), isImage);
 showWhen(gGlyph.add(glyphActions, 'remove').name('− Delete this glyph'), () => params.glyphs.length > 1);
 const gXf = gGlyph.addFolder('Skew, stretch & morph').close();
 gXf.add(active, 'skew', -0.8, 0.8, 0.005).name('Skew');
 gXf.add(active, 'stretch', 0.3, 3, 0.01).name('Stretch');
-tip(gXf.add(active, 'text2').name('Morph to').onFinishChange(() => void loadGlyph(activeIdx, false)), 'A second text to blend towards');
-gXf.add(active, 'morph', 0, 1, 0.001).name('Morph amount');
+showWhen(tip(gXf.add(active, 'text2').name('Morph to').onFinishChange(() => void loadGlyph(activeIdx, false)), 'A second text to blend towards'), () => !isImage());
+showWhen(gXf.add(active, 'morph', 0, 1, 0.001).name('Morph amount'), () => !isImage());
 gXf.add(glyphActions, 'reset').name('Reset transform');
 
 // How the landscape is drawn. The three sliders mean different things per look.
@@ -970,6 +1039,52 @@ gExport.add(actions, 'copySettings').name('Copy settings (JSON)');
 gExport.add(actions, 'uploadFont').name('Upload font…');
 applyVisibility();
 
+const imageInput = document.getElementById('image-file') as HTMLInputElement;
+
+async function addImageGlyph(file: File): Promise<void> {
+  if (params.glyphs.length >= MAX_GLYPHS) {
+    toast(`Up to ${MAX_GLYPHS} glyphs at once`);
+    return;
+  }
+  let mask;
+  try {
+    mask = await maskFromFile(file);
+  } catch {
+    toast('That file could not be read as an image');
+    return;
+  }
+  const base = activeGlyph();
+  params.glyphs.push({
+    ...defaultGlyph,
+    text: file.name.replace(/\.[^.]+$/, '').slice(0, 24) || 'image',
+    font: base.font,
+    image: mask.dataUrl,
+    size: params.glyphs.length === 1 ? 1.1 : clamp(base.size * 0.8, 0.2, 4),
+    posX: params.glyphs.length === 1 ? 0 : clamp(base.posX + 0.3, -1.2, 1.2),
+    posY: params.glyphs.length === 1 ? 0 : clamp(base.posY - 0.25, -1.2, 1.2),
+  });
+  activeIdx = selectedIdx = params.glyphs.length - 1;
+  void loadGlyph(activeIdx, false);
+  refreshGlyphPicker();
+  if (params.fill < 0.3) params.fill = 0.9; // the silhouette is drawn with the letter fill
+  refreshGui();
+  if (mask.opaque) toast('This image has no transparent area, so it was used as a solid block');
+}
+
+imageInput.addEventListener('change', async () => {
+  for (const f of Array.from(imageInput.files ?? [])) await addImageGlyph(f);
+  imageInput.value = '';
+});
+window.addEventListener('dragover', (e) => {
+  if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+});
+window.addEventListener('drop', async (e) => {
+  const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'));
+  if (!files.length) return;
+  e.preventDefault();
+  for (const f of files) await addImageGlyph(f);
+});
+
 const fileInput = document.getElementById('font-file') as HTMLInputElement;
 fileInput.addEventListener('change', async () => {
   const file = fileInput.files?.[0];
@@ -994,6 +1109,7 @@ window.addEventListener('keydown', (e) => {
     refreshGui();
     return;
   }
+  if (activeGlyph().image) return; // an imported image has no text to replace
   activeGlyph().text = e.key;
   void loadGlyph(activeIdx, true);
   refreshGlyphPicker();
@@ -1368,7 +1484,7 @@ const glyphTools = new GlyphTools({
     const g = params.glyphs[selectedIdx];
     if (!g) return null;
     return {
-      index: selectedIdx, text: g.text, size: g.size, outline: g.outline, outlineW: g.outlineW,
+      index: selectedIdx, text: g.image ? 'Image' : g.text, size: g.size, outline: g.outline, outlineW: g.outlineW,
       shortSide: Math.min(uniforms.uRes.value.x, uniforms.uRes.value.y),
     };
   },

@@ -13,6 +13,7 @@ export interface GlyphDef {
   morph: number; // 0..1 blend between text and text2
   outline: boolean; // draw only an outline instead of a solid fill
   outlineW: number; // outline thickness, short-side units
+  image: string; // imported silhouette (PNG data URL); when set it replaces the text
 }
 
 export interface Params {
@@ -68,7 +69,7 @@ export interface Params {
 }
 
 export const defaultGlyph: GlyphDef = {
-  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0, outline: false, outlineW: 0.012,
+  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0, outline: false, outlineW: 0.012, image: '',
 };
 
 export const defaultParams: Params = {

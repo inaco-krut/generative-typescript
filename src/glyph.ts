@@ -29,11 +29,17 @@ export function renderGlyphSDF(text: string, font: FontDef, fill = 0.55): Float3
   ctx.fillText(text, x, y);
 
   const data = ctx.getImageData(0, 0, n, n).data;
+  return coverageToSDF((i) => data[i * 4] / 255);
+}
+
+/** Signed distance field from a per-pixel coverage function (0..1, row-major, SDF_SIZE x SDF_SIZE). */
+function coverageToSDF(coverage: (i: number) => number): Float32Array {
+  const n = SDF_SIZE;
   const outer = new Float64Array(n * n); // squared distance to nearest inside pixel
   const inner = new Float64Array(n * n); // squared distance to nearest outside pixel
   for (let i = 0; i < n * n; i++) {
     // use edge coverage for sub-pixel accurate edges (as TinySDF does)
-    const a = data[i * 4] / 255;
+    const a = coverage(i);
     if (a >= 1) {
       outer[i] = 0;
       inner[i] = INF;
@@ -54,6 +60,62 @@ export function renderGlyphSDF(text: string, font: FontDef, fill = 0.55): Float3
   boxBlur(out, n, 2);
   boxBlur(out, n, 2);
   return out;
+}
+
+export interface ImportedMask {
+  /** Normalised silhouette: white where the image is opaque, transparent elsewhere (a PNG data URL, SDF_SIZE square). */
+  dataUrl: string;
+  /** True when the image has no transparent pixels, so the whole rectangle is the shape. */
+  opaque: boolean;
+}
+
+async function decode(src: string): Promise<HTMLImageElement> {
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  return img;
+}
+
+/** Reads an image file and keeps only its alpha channel, fitted and centred like a text glyph. */
+export async function maskFromFile(file: Blob, fill = 0.55): Promise<ImportedMask> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await decode(url);
+    const n = SDF_SIZE;
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    const scale = (fill * n) / Math.max(w, h, 1);
+    const c = document.createElement('canvas');
+    c.width = c.height = n;
+    const ctx = c.getContext('2d', { willReadFrequently: true })!;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, (n - w * scale) / 2, (n - h * scale) / 2, w * scale, h * scale);
+    const px = ctx.getImageData(0, 0, n, n);
+    let inside = 0;
+    let solid = 0;
+    for (let i = 0; i < n * n; i++) {
+      const a = px.data[i * 4 + 3];
+      if (a > 8) inside++;
+      if (a > 247) solid++;
+      px.data[i * 4] = px.data[i * 4 + 1] = px.data[i * 4 + 2] = 255;
+    }
+    ctx.putImageData(px, 0, 0);
+    return { dataUrl: c.toDataURL('image/png'), opaque: inside > 0 && solid / inside > 0.985 && Math.abs(inside / (w * scale * h * scale) - 1) < 0.02 };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Signed distance field for a stored silhouette (see maskFromFile). */
+export async function renderMaskSDF(dataUrl: string): Promise<Float32Array> {
+  const img = await decode(dataUrl);
+  const n = SDF_SIZE;
+  const c = document.createElement('canvas');
+  c.width = c.height = n;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0, n, n);
+  const data = ctx.getImageData(0, 0, n, n).data;
+  return coverageToSDF((i) => data[i * 4 + 3] / 255);
 }
 
 function boxBlur(a: Float32Array, n: number, r: number): void {
