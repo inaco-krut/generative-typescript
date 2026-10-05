@@ -11,6 +11,8 @@ export interface GlyphDef {
   stretch: number; // horizontal stretch
   text2: string; // optional second shape to morph towards ('' = none)
   morph: number; // 0..1 blend between text and text2
+  outline: boolean; // draw only an outline instead of a solid fill
+  outlineW: number; // outline thickness, short-side units
 }
 
 export interface Params {
@@ -66,7 +68,7 @@ export interface Params {
 }
 
 export const defaultGlyph: GlyphDef = {
-  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0,
+  text: 'A', font: 'Playfair Display', size: 1, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0, outline: false, outlineW: 0.012,
 };
 
 export const defaultParams: Params = {
@@ -121,7 +123,7 @@ export const defaultParams: Params = {
 // A preset only lists what differs from the defaults. To add one: tweak the panel, press
 // "copy settings (JSON)", and paste the result here under a new name.
 // Presets (and presets saved by older versions) may still describe a single glyph with top-level fields.
-export type PresetData = Partial<Params> & Partial<GlyphDef>;
+export type PresetData = Omit<Partial<Params>, 'glyphs'> & Partial<GlyphDef> & { glyphs?: Partial<GlyphDef>[] };
 
 export const presets: Record<string, PresetData> = {
   Default: {},

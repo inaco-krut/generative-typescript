@@ -70,6 +70,7 @@ uniform float uGrow;          // letter weight: >0 fatter, <0 thinner (short-sid
 uniform float uShapeWarp;     // noise warp of the letterforms
 uniform float uShapeWarpScale;
 uniform float uShapeWarpSpeed;
+uniform float uGOut[MAXG];    // per glyph: outline thickness in short-side units (0 = solid fill)
 ${noiseGLSL}
 
 float sampleGlyph(int i, vec2 c) {
@@ -102,11 +103,16 @@ float smin(float a, float b, float k) {
   return min(a, b) - h * h * k * 0.25;
 }
 
-float glyphDist(vec2 q) {
+vec2 warpQ(vec2 q) {
   if (uShapeWarp > 0.001) {
     vec3 p = vec3(q * uShapeWarpScale + 3.7, uTime * uShapeWarpSpeed);
     q += uShapeWarp * 0.05 * vec2(snoise(p), snoise(p + vec3(7.1, 3.3, 0.0)));
   }
+  return q;
+}
+
+float glyphDist(vec2 q) {
+  q = warpQ(q);
   float k = uBlend * 0.25;
   float best = 1e3;
   for (int i = 0; i < MAXG; i++) {
@@ -115,6 +121,29 @@ float glyphDist(vec2 q) {
     best = k > 0.0001 ? smin(best, d, k) : min(best, d);
   }
   return best - uGrow;
+}
+
+// How much of this pixel is drawn as letter: solid glyphs are filled, outlined glyphs only keep a band of
+// thickness uGOut just inside their edge. (Distance queries elsewhere still use the whole letter shape.)
+float glyphCover(vec2 q) {
+  q = warpQ(q);
+  float k = uBlend * 0.25;
+  float best = 1e3;
+  float ring = 0.0;
+  for (int i = 0; i < MAXG; i++) {
+    if (i >= uCount) break;
+    float d = glyphOne(i, q);
+    if (uGOut[i] > 0.0) {
+      float dg = d - uGrow;
+      float fd = max(fwidth(dg), 1e-6);
+      ring = max(ring, smoothstep(-fd, fd, dg + uGOut[i]) * (1.0 - smoothstep(-fd, fd, dg)));
+    } else {
+      best = k > 0.0001 ? smin(best, d, k) : min(best, d);
+    }
+  }
+  float dF = best - uGrow;
+  float fdF = max(fwidth(dF), 1e-6);
+  return max(1.0 - smoothstep(-fdF, fdF, dF), ring);
 }
 `;
 
@@ -227,9 +256,8 @@ vec3 lookTopo(float d, float H) {
   vec3 L = normalize(vec3(-0.5, 0.6, 0.7));
   col += (dot(n, L) - L.z) * uShade;
 
-  // glyph fill
-  float fd = max(fwidth(d), 1e-6);
-  float inside = 1.0 - smoothstep(-fd, fd, d);
+  // glyph fill (or outline)
+  float inside = glyphCover((gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y));
   col = mix(col, uFillCol, inside * uFill);
 
   // contours
@@ -355,8 +383,7 @@ void main() {
 
   if (uLook != 0) {
     // the letters' fill sits on top of the other looks
-    float fd = max(fwidth(d), 1e-6);
-    float inside = 1.0 - smoothstep(-fd, fd, d);
+    float inside = glyphCover(q);
     col = mix(col, uFillCol, inside * uFill);
   }
 
@@ -414,9 +441,7 @@ void main() {
 
   // glyph areas stay sharp: always with blur, fading in with the letter fill for the glass alone
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
-  float d = glyphDist(q);
-  float fd = max(fwidth(d), 1e-6);
-  float inside = 1.0 - smoothstep(-fd, fd, d);
+  float inside = glyphCover(q);
   float excl = inside * mix(smoothstep(0.0, 0.25, uFill), 1.0, blurMix());
 
   vec3 col;
@@ -707,9 +732,7 @@ uniform float uFill;
 ${glyphGLSL}
 void main() {
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
-  float d = glyphDist(q);
-  float fd = max(fwidth(d), 1e-6);
-  float inside = 1.0 - smoothstep(-fd, fd, d);
+  float inside = glyphCover(q);
   gl_FragColor = vec4(mix(uPaper, uFillCol, inside * uFill), 1.0);
 }
 `;

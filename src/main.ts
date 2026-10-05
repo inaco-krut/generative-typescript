@@ -7,6 +7,7 @@ import {
 } from './shader';
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
 import { EffectsPanel } from './effectsUI';
+import { GlyphTools } from './glyphTools';
 import { renderGlyphSDF } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
@@ -24,6 +25,7 @@ const store = new GlyphStore();
 const gPos = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector2());
 const gSize: number[] = new Array(MAX_GLYPHS).fill(1);
 const gMorph: number[] = new Array(MAX_GLYPHS).fill(1);
+const gOut: number[] = new Array(MAX_GLYPHS).fill(0);
 const gXform = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector4(1, 0, 0, 1));
 const morphStart: number[] = new Array(MAX_GLYPHS).fill(-1);
 const loadTokens: number[] = new Array(MAX_GLYPHS).fill(0);
@@ -51,6 +53,7 @@ const uniforms = {
   uGSize: { value: gSize },
   uGMorph: { value: gMorph },
   uGXform: { value: gXform },
+  uGOut: { value: gOut },
   uBlend: { value: params.shapeBlend },
   uSoft: { value: params.shapeSoft },
   uGrow: { value: params.shapeGrow },
@@ -94,7 +97,7 @@ const uniforms = {
 const glyphUniforms = {
   uTime: uniforms.uTime,
   uFromArr: uniforms.uFromArr, uToArr: uniforms.uToArr, uCount: uniforms.uCount,
-  uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform,
+  uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform, uGOut: uniforms.uGOut,
   uBlend: uniforms.uBlend, uSoft: uniforms.uSoft, uGrow: uniforms.uGrow,
   uShapeWarp: uniforms.uShapeWarp, uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
 };
@@ -562,6 +565,7 @@ function syncUniforms(): void {
     gSize[i] = g.size;
     const m = glyphMatrices(g).inv;
     gXform[i].set(m[0], m[1], m[2], m[3]);
+    gOut[i] = g.outline ? Math.max(g.outlineW, 0.0005) : 0;
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
   }
   uniforms.uLook.value = params.look;
@@ -682,6 +686,10 @@ const active = {
   set text2(v: string) { activeGlyph().text2 = v; },
   get morph() { return activeGlyph().morph; },
   set morph(v: number) { activeGlyph().morph = v; },
+  get outline() { return activeGlyph().outline; },
+  set outline(v: boolean) { activeGlyph().outline = v; },
+  get outlineW() { return activeGlyph().outlineW; },
+  set outlineW(v: number) { activeGlyph().outlineW = v; },
 };
 
 const glyphLabel = (i: number) => {
@@ -726,6 +734,8 @@ const glyphActions = {
     g.rot = 0;
     g.skew = 0;
     g.stretch = 1;
+    g.outline = base?.outline ?? false;
+    g.outlineW = base?.outlineW ?? defaultGlyph.outlineW;
     g.size = base?.size ?? defaultGlyph.size;
     refreshGui();
   },
@@ -756,6 +766,8 @@ gGlyph.add(active, 'posY', -1.5, 1.5, 0.001).name('position y');
 gGlyph.add(active, 'rot', -180, 180, 0.5).name('rotation');
 gGlyph.add(active, 'skew', -0.8, 0.8, 0.005).name('skew');
 gGlyph.add(active, 'stretch', 0.3, 3, 0.01).name('stretch');
+gGlyph.add(active, 'outline').name('outline only');
+gGlyph.add(active, 'outlineW', 0.002, 0.05, 0.0005).name('outline thickness');
 gGlyph.add(glyphActions, 'reset').name('reset position, size & shape');
 gGlyph.add(active, 'text2').name('morph to (text)').onFinishChange(() => void loadGlyph(activeIdx, false));
 gGlyph.add(active, 'morph', 0, 1, 0.001).name('morph amount');
@@ -1298,11 +1310,41 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+const glyphTools = new GlyphTools({
+  get: () => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return null;
+    return {
+      index: selectedIdx, text: g.text, size: g.size, outline: g.outline, outlineW: g.outlineW,
+      shortSide: Math.min(uniforms.uRes.value.x, uniforms.uRes.value.y),
+    };
+  },
+  setOutline: (on) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.outline = on;
+    // the outline is drawn with the letter fill colour; at zero fill it would be invisible
+    if (on && params.fill < 0.3) params.fill = 0.9;
+    refreshGui();
+  },
+  setThickness: (w) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.outlineW = w;
+    refreshGui();
+  },
+});
+document.body.appendChild(glyphTools.root);
+
 function updateSelectionUI(): void {
   const ok = selectedIdx >= 0 && selectedIdx < params.glyphs.length;
   selBox.style.display = ok ? 'block' : 'none';
-  if (!ok) return;
+  if (!ok) {
+    glyphTools.update(null);
+    return;
+  }
   const g = glyphBox(selectedIdx);
+  glyphTools.update(g);
   selBox.style.left = `${g.x0 - SEL_PAD}px`;
   selBox.style.top = `${g.y0 - SEL_PAD}px`;
   selBox.style.width = `${g.x1 - g.x0 + SEL_PAD * 2}px`;

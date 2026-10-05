@@ -57,3 +57,57 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 #effects .fx-card:hover { outline: 1px solid var(--accent); }
 #effects .fx-card canvas { display: block; width: 100%; height: auto; background: #111; }
 #effects .fx-card span { display: block; padding: 3px 6px 4px; }
+
+/* ---- floating glyph readout ---- */
+#glyph-tools {
+  position: fixed; z-index: 6; width: 236px; box-sizing: border-box; padding: 8px 10px 10px;
+  background: rgba(10, 12, 15, 0.92); color: #d6dbe0; backdrop-filter: blur(6px);
+  border: 1px solid #2b3138; border-radius: 0;
+  font: 10px/1.2 'JetBrains Mono', 'Roboto Mono', ui-monospace, Menlo, monospace;
+  letter-spacing: 0.06em; text-transform: uppercase; user-select: none;
+  --acc: #2cc9ff;
+}
+#glyph-tools[hidden] { display: none; }
+#glyph-tools .gt-c { position: absolute; width: 7px; height: 7px; border: 0 solid var(--acc); pointer-events: none; }
+#glyph-tools .gt-c.tl { left: -1px; top: -1px; border-left-width: 2px; border-top-width: 2px; }
+#glyph-tools .gt-c.tr { right: -1px; top: -1px; border-right-width: 2px; border-top-width: 2px; }
+#glyph-tools .gt-c.bl { left: -1px; bottom: -1px; border-left-width: 2px; border-bottom-width: 2px; }
+#glyph-tools .gt-c.br { right: -1px; bottom: -1px; border-right-width: 2px; border-bottom-width: 2px; }
+#glyph-tools .gt-head { display: flex; justify-content: space-between; gap: 8px; padding-bottom: 6px; margin-bottom: 7px; border-bottom: 1px dashed #343b43; color: #8d97a1; }
+#glyph-tools .gt-id::before { content: '▸ '; color: var(--acc); }
+#glyph-tools .gt-size { color: var(--acc); font-variant-numeric: tabular-nums; }
+#glyph-tools .gt-row { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; margin-top: 7px; }
+#glyph-tools .gt-row:first-of-type { margin-top: 0; }
+#glyph-tools .gt-row.off { opacity: 0.38; }
+#glyph-tools .gt-label { color: #7b858f; }
+#glyph-tools .gt-segs { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #343b43; }
+#glyph-tools .gt-seg {
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: #9aa4ad; background: transparent;
+  border: 0; padding: 4px 0; cursor: pointer;
+}
+#glyph-tools .gt-seg + .gt-seg { border-left: 1px solid #343b43; }
+#glyph-tools .gt-seg:hover { color: #fff; background: #1b2026; }
+#glyph-tools .gt-seg.on { color: #04141a; background: var(--acc); }
+#glyph-tools .gt-row:has(.gt-slider) { grid-template-columns: 52px 1fr 46px; }
+#glyph-tools .gt-read { text-align: right; color: var(--acc); font-variant-numeric: tabular-nums; }
+#glyph-tools .gt-slider {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 14px; margin: 0; background: transparent; cursor: ew-resize;
+  --fill: 0%;
+}
+#glyph-tools .gt-slider:disabled { cursor: default; }
+#glyph-tools .gt-slider::-webkit-slider-runnable-track {
+  height: 14px;
+  background:
+    linear-gradient(var(--acc), var(--acc)) left 50% / var(--fill) 2px no-repeat,
+    linear-gradient(#3a424a, #3a424a) left 50% / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, #4b545d 0 1px, transparent 1px 10%) left 0 / 100% 4px no-repeat,
+    repeating-linear-gradient(90deg, #4b545d 0 1px, transparent 1px 10%) left 100% / 100% 4px no-repeat;
+}
+#glyph-tools .gt-slider::-moz-range-track {
+  height: 14px; background:
+    linear-gradient(#3a424a, #3a424a) left 50% / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, #4b545d 0 1px, transparent 1px 10%) left 0 / 100% 4px no-repeat,
+    repeating-linear-gradient(90deg, #4b545d 0 1px, transparent 1px 10%) left 100% / 100% 4px no-repeat;
+}
+#glyph-tools .gt-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 7px; height: 14px; background: #fff; border: 1px solid var(--acc); border-radius: 0; margin-top: 0; }
+#glyph-tools .gt-slider::-moz-range-thumb { width: 5px; height: 12px; background: #fff; border: 1px solid var(--acc); border-radius: 0; }
