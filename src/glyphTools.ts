@@ -1,14 +1,16 @@
-// Floating readout that follows the selected glyph: solid/outline toggle and outline thickness.
+// Floating panel that follows the selected glyph: solid/outline, colour, opacity and outline thickness.
+// These are the only place these settings live (the side panel does not repeat them).
 // Matches the rest of the UI: rounded surface, segmented control, slim slider with a readout.
 
 export interface GlyphToolsHost {
   get(): {
     index: number; text: string; size: number; outline: boolean; outlineW: number; shortSide: number;
-    color: string; opacity: number;
+    color: string; opacity: number; custom: boolean;
   } | null;
   setOutline(on: boolean): void;
   setThickness(w: number): void;
   setColor(hex: string): void;
+  usePalette(): void;
   setOpacity(v: number): void;
 }
 
@@ -32,6 +34,7 @@ export class GlyphTools {
   private readout = el('output', 'gt-read');
   private strokeRow = el('div', 'gt-row');
   private colorIn = el('input');
+  private autoBtn = el('button', 'gt-auto', 'Palette');
   private opacityIn = el('input');
   private opacityRead = el('output', 'gt-read');
 
@@ -60,7 +63,10 @@ export class GlyphTools {
     this.colorIn.className = 'gt-color';
     this.colorIn.title = 'colour of this glyph';
     const colorRow = el('div', 'gt-row');
-    colorRow.append(el('span', 'gt-label', 'Colour'), this.colorIn);
+    this.autoBtn.title = 'Go back to the palette colours';
+    const swatch = el('div', 'gt-colorwrap');
+    swatch.append(this.colorIn, this.autoBtn);
+    colorRow.append(el('span', 'gt-label', 'Colour'), swatch);
 
     this.opacityIn.type = 'range';
     this.opacityIn.min = '0';
@@ -77,6 +83,7 @@ export class GlyphTools {
     this.lineBtn.addEventListener('click', () => host.setOutline(true));
     this.slider.addEventListener('input', () => host.setThickness(Number(this.slider.value)));
     this.colorIn.addEventListener('input', () => host.setColor(this.colorIn.value));
+    this.autoBtn.addEventListener('click', () => host.usePalette());
     this.opacityIn.addEventListener('input', () => host.setOpacity(Number(this.opacityIn.value)));
     // never let clicks on the panel reach the canvas (that would deselect the glyph)
     r.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -97,6 +104,7 @@ export class GlyphTools {
     if (Number(this.slider.value) !== g.outlineW) this.slider.value = String(g.outlineW);
     this.readout.textContent = `${(g.outlineW * g.shortSide).toFixed(0)} px`;
     if (this.colorIn.value !== g.color.toLowerCase()) this.colorIn.value = g.color;
+    this.autoBtn.hidden = !g.custom; // only offered once a colour was chosen by hand
     if (Number(this.opacityIn.value) !== g.opacity) this.opacityIn.value = String(g.opacity);
     this.opacityRead.textContent = `${Math.round(g.opacity * 100)}%`;
     this.opacityIn.style.setProperty('--fill', `${g.opacity * 100}%`);

@@ -206,3 +206,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 #glyph-tools .gt-color::-webkit-color-swatch-wrapper { padding: 3px; }
 #glyph-tools .gt-color::-webkit-color-swatch { border: 0; border-radius: 4px; }
 #glyph-tools .gt-color::-moz-color-swatch { border: 0; border-radius: 4px; }
+
+#glyph-tools .gt-colorwrap { display: flex; gap: 6px; align-items: center; }
+#glyph-tools .gt-colorwrap .gt-color { flex: 1; }
+#glyph-tools .gt-auto { font: 500 11px var(--ui-font); color: var(--ui-dim); background: var(--ui-bg-3); border: 1px solid var(--ui-line); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+#glyph-tools .gt-auto:hover { color: var(--ui-text); background: var(--ui-bg-4); }
+#glyph-tools .gt-auto[hidden] { display: none; }

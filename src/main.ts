@@ -751,17 +751,6 @@ const active = {
   set text2(v: string) { activeGlyph().text2 = v; },
   get morph() { return activeGlyph().morph; },
   set morph(v: number) { activeGlyph().morph = v; },
-  get outline() { return activeGlyph().outline; },
-  set outline(v: boolean) { activeGlyph().outline = v; },
-  get outlineW() { return activeGlyph().outlineW; },
-  set outlineW(v: number) { activeGlyph().outlineW = v; },
-  // colours show what is actually drawn (the palette colour while none is chosen)
-  get color() { return glyphFillHex(activeGlyph()); },
-  set color(v: string) { activeGlyph().color = v; },
-  get strokeColor() { return glyphStrokeHex(activeGlyph()); },
-  set strokeColor(v: string) { activeGlyph().strokeColor = v; },
-  get opacity() { return activeGlyph().opacity; },
-  set opacity(v: number) { activeGlyph().opacity = v; },
   get grow() { return activeGlyph().grow; },
   set grow(v: number) { activeGlyph().grow = v; },
   get soft() { return activeGlyph().soft; },
@@ -818,12 +807,6 @@ const glyphActions = {
     g.text = 'A';
     void loadGlyph(activeIdx, true);
     refreshGlyphPicker();
-  },
-  matchPalette() {
-    const g = activeGlyph();
-    g.color = '';
-    g.strokeColor = '';
-    refreshGui();
   },
   reset() {
     const g = activeGlyph();
@@ -885,17 +868,7 @@ const fontCtl = showWhen(
 tip(gGlyph.add(active, 'size', 0.2, 4, 0.01).name('Size'), 'Or drag a corner handle / scroll on the selected glyph');
 gGlyph.add(active, 'rot', -180, 180, 0.5).name('Rotation');
 
-const gLook2 = gGlyph.addFolder('Appearance');
-tip(gLook2.addColor(active, 'color').name('Colour'), 'Follows the palette until you choose a colour');
-gLook2.add(active, 'opacity', 0, 1, 0.01).name('Opacity');
-gLook2.add(active, 'outline').name('Outline only');
-showWhen(gLook2.add(active, 'outlineW', 0.002, 0.05, 0.0005).name('Outline width'), () => activeGlyph().outline);
-showWhen(gLook2.addColor(active, 'strokeColor').name('Outline colour'), () => activeGlyph().outline);
-showWhen(
-  tip(gLook2.add(glyphActions, 'matchPalette').name('Use palette colours'), 'Go back to the palette colours for this glyph'),
-  () => !!activeGlyph().color || !!activeGlyph().strokeColor,
-);
-const gShape2 = gGlyph.addFolder('Shape').close();
+const gShape2 = gGlyph.addFolder('Shape').close(); // weight, softness and warp: not in the floating panel
 gShape2.add(active, 'grow', -0.05, 0.08, 0.001).name('Weight');
 gShape2.add(active, 'soft', 0, 1, 0.005).name('Soften corners');
 gShape2.add(active, 'warp', 0, 1, 0.005).name('Warp');
@@ -1013,7 +986,7 @@ gLabels.add(params, 'caption').name('Caption');
 tip(
   gLabels
     .addColor(params, 'textFill')
-    .name('Colour')
+    .name('Label colour')
     .onChange(() => {
       params.textAuto = false;
     }),
@@ -1517,6 +1490,7 @@ const glyphTools = new GlyphTools({
       // in outline mode the colour edits the outline; otherwise the fill
       color: g.outline ? glyphStrokeHex(g) : glyphFillHex(g),
       opacity: g.opacity,
+      custom: !!g.color || !!g.strokeColor,
     };
   },
   setOutline: (on) => {
@@ -1532,6 +1506,13 @@ const glyphTools = new GlyphTools({
     if (!g) return;
     if (g.outline) g.strokeColor = hex;
     else g.color = hex;
+    refreshGui();
+  },
+  usePalette: () => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.color = '';
+    g.strokeColor = '';
     refreshGui();
   },
   setOpacity: (v) => {
