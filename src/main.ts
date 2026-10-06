@@ -495,9 +495,9 @@ function drawArtwork(target: THREE.WebGLRenderTarget, advance = true, lineScale 
   renderer.render(baseScene, camera);
   for (const i of layerOrder(params.layers)) {
     const l = params.layers[i];
-    if (l.look === 1 && floatRT) renderHeightField(); // renders elsewhere, so do it before the scissor is set
     if (l.look === SEA && l !== sea) continue;
-    applyLayerUniforms(l, lineScale); // a second sea would just repeat the first
+    applyLayerUniforms(l, lineScale);
+    if (l.look === 1 && floatRT) renderHeightField(); // this layer's own terrain; renders elsewhere, so before the scissor // a second sea would just repeat the first
     const W = target.width;
     const H = target.height;
     target.scissor.set(Math.floor(l.x0 * W), Math.floor((1 - l.y1) * H), Math.ceil((l.x1 - l.x0) * W), Math.ceil((l.y1 - l.y0) * H));
@@ -1165,23 +1165,22 @@ function detailKey(): string {
   return `${JSON.stringify({ ...params, animate: false, glass: 0, glassLight: 0, blur: 0, effects: [] })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
 }
 
-/** Labels belong to topographic layers: keep them inside those rectangles, and out from under layers drawn above. */
-const clipCanvas = document.createElement('canvas');
-function clipDetailsToLayers(): void {
-  const W = overlay.width;
-  const H = overlay.height;
-  clipCanvas.width = W;
-  clipCanvas.height = H;
-  const c = clipCanvas.getContext('2d')!;
-  for (const i of layerOrder(params.layers)) {
-    const l = params.layers[i];
-    c.globalCompositeOperation = l.look === TOPO ? 'source-over' : 'destination-out';
-    c.fillRect(l.x0 * W, l.y0 * H, (l.x1 - l.x0) * W, (l.y1 - l.y0) * H);
+/** The part of a layer's rectangle that is not covered by layers drawn above it. */
+const tmpOverlay = document.createElement('canvas');
+const tmpMask = document.createElement('canvas');
+const visCanvas = document.createElement('canvas');
+function visibleRegion(order: number[], n: number, W: number, H: number): HTMLCanvasElement {
+  visCanvas.width = W;
+  visCanvas.height = H;
+  const c = visCanvas.getContext('2d')!;
+  const l = params.layers[order[n]];
+  c.fillRect(l.x0 * W, l.y0 * H, (l.x1 - l.x0) * W, (l.y1 - l.y0) * H);
+  c.globalCompositeOperation = 'destination-out';
+  for (const j of order.slice(n + 1)) {
+    const u = params.layers[j];
+    c.fillRect(u.x0 * W, u.y0 * H, (u.x1 - u.x0) * W, (u.y1 - u.y0) * H);
   }
-  overlayCtx.save();
-  overlayCtx.globalCompositeOperation = 'destination-in';
-  overlayCtx.drawImage(clipCanvas, 0, 0);
-  overlayCtx.restore();
+  return visCanvas;
 }
 
 async function computeDetails(key: string): Promise<void> {
@@ -1207,56 +1206,75 @@ async function computeDetails(key: string): Promise<void> {
       });
     }
     syncUniforms();
-    const topo = layerOrder(params.layers).map((i) => params.layers[i]).reverse().find((l) => l.look === TOPO) ?? params.layers[0];
-    applyLayerUniforms(topo); // labels follow the topmost topographic layer's terrain
-    paletteUniforms(params.palette);
-    const prevRes = uniforms.uRes.value.clone();
-    uniforms.uRes.value.set(gw, gh);
-    uniforms.uOutputH.value = 1;
-    renderer.setRenderTarget(fieldTarget);
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(null);
-    uniforms.uOutputH.value = 0;
-    uniforms.uRes.value.copy(prevRes);
-    const buf = new Float32Array(gw * gh * 4);
-    renderer.readRenderTargetPixels(fieldTarget, 0, 0, gw, gh, buf);
-    const field = new Float32Array(gw * gh);
-    const dist = new Float32Array(gw * gh); // distance to the glyphs, as drawn (blend, warp and all)
-    for (let i = 0; i < field.length; i++) {
-      field[i] = buf[i * 4];
-      dist[i] = buf[i * 4 + 1];
-    }
     const m = Math.min(W, H);
-    const glyphDist = (x: number, y: number) => {
-      const gx = Math.min(gw - 1, Math.max(0, Math.floor((x / W) * gw)));
-      const gy = Math.min(gh - 1, Math.max(0, Math.floor(((H - y) / H) * gh)));
-      return dist[gy * gw + gx] * m;
-    };
-
-    renderDetails(
-      {
-        field, gw, gh, W, H,
-        cx: W / 2 + mean(params.glyphs.map((g) => g.posX)) * Math.min(W, H),
-        cy: H / 2 - mean(params.glyphs.map((g) => g.posY)) * Math.min(W, H),
-        glyphDist },
-      {
-        labels: params.showLabels,
-        spots: params.showSpots,
-        notes: params.showNotes,
-        avoidGlyph: params.glyphs.some((g) => g.opacity > 0.3),
-        spacing: topo.spacing,
-        metersPerLine: params.labelStep,
-        baseElevation: params.labelBase,
-        labelSize: params.labelSize,
-        words: params.words.split(',').map((w) => w.trim()).filter(Boolean),
-        caption: params.caption,
-        seed: topo.seed,
-        textColor: params.textAuto ? palettes[params.palette].index : params.textFill,
-      },
-      overlayCtx,
-      maskCtx,
-    );
-    clipDetailsToLayers();
+    tmpOverlay.width = tmpMask.width = W;
+    tmpOverlay.height = tmpMask.height = H;
+    overlayCtx.clearRect(0, 0, W, H);
+    maskCtx.fillStyle = '#000';
+    maskCtx.fillRect(0, 0, W, H);
+    // every topographic layer gets labels from its own terrain, kept inside its own rectangle
+    const order = layerOrder(params.layers);
+    for (let n = 0; n < order.length; n++) {
+      const topo = params.layers[order[n]];
+      if (topo.look !== TOPO) continue;
+      applyLayerUniforms(topo);
+      paletteUniforms(params.palette);
+      const prevRes = uniforms.uRes.value.clone();
+      uniforms.uRes.value.set(gw, gh);
+      uniforms.uOutputH.value = 1;
+      renderer.setRenderTarget(fieldTarget);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+      uniforms.uOutputH.value = 0;
+      uniforms.uRes.value.copy(prevRes);
+      const buf = new Float32Array(gw * gh * 4);
+      renderer.readRenderTargetPixels(fieldTarget, 0, 0, gw, gh, buf);
+      const field = new Float32Array(gw * gh);
+      const dist = new Float32Array(gw * gh); // distance to the glyphs, as drawn (blend, warp and all)
+      for (let i = 0; i < field.length; i++) {
+        field[i] = buf[i * 4];
+        dist[i] = buf[i * 4 + 1];
+      }
+      const glyphDist = (x: number, y: number) => {
+        const gx = Math.min(gw - 1, Math.max(0, Math.floor((x / W) * gw)));
+        const gy = Math.min(gh - 1, Math.max(0, Math.floor(((H - y) / H) * gh)));
+        return dist[gy * gw + gx] * m;
+      };
+      renderDetails(
+        {
+          field, gw, gh, W, H,
+          cx: W / 2 + mean(params.glyphs.map((g) => g.posX)) * m,
+          cy: H / 2 - mean(params.glyphs.map((g) => g.posY)) * m,
+          glyphDist },
+        {
+          labels: params.showLabels,
+          spots: params.showSpots,
+          notes: params.showNotes,
+          avoidGlyph: params.glyphs.some((g) => g.opacity > 0.3),
+          spacing: topo.spacing,
+          metersPerLine: params.labelStep,
+          baseElevation: params.labelBase,
+          labelSize: params.labelSize,
+          words: params.words.split(',').map((w) => w.trim()).filter(Boolean),
+          caption: params.caption,
+          seed: topo.seed,
+          textColor: params.textAuto ? palettes[params.palette].index : params.textFill,
+        },
+        tmpOverlay.getContext('2d')!,
+        tmpMask.getContext('2d')!,
+      );
+      const vis = visibleRegion(order, n, W, H);
+      for (const [src, dst, op] of [[tmpOverlay, overlayCtx, 'source-over'], [tmpMask, maskCtx, 'lighten']] as const) {
+        const sc = src.getContext('2d')!;
+        sc.globalCompositeOperation = 'destination-in';
+        sc.drawImage(vis, 0, 0);
+        sc.globalCompositeOperation = 'source-over';
+        dst.globalCompositeOperation = op;
+        dst.drawImage(src, 0, 0);
+        dst.globalCompositeOperation = 'source-over';
+      }
+    }
+    paletteUniforms(params.palette);
     maskTex.needsUpdate = true;
     overlayTex.needsUpdate = true;
     uniforms.uMaskOn.value = 1;

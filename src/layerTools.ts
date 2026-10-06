@@ -229,16 +229,24 @@ export class LayerTools {
     this.layerBtns[0].disabled = this.layerBtns[1].disabled = g.pos === 0;
     this.layerBtns[2].disabled = this.layerBtns[3].disabled = g.pos === g.count - 1;
 
-    // beside the layer: right of it if there is room, else left, else tucked inside; kept on screen
+    // beside the layer, but never over the other menus: stay between the Effects panel and the right-hand panel,
+    // and below the top bar. Right of the layer if there is room, else left, else tucked inside its edge.
     const w = this.root.offsetWidth || 252;
     const h = this.root.offsetHeight || 300;
     const gap = 14;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const fx = document.getElementById('effects');
+    const gui = document.querySelector('.lil-gui.root');
+    const safeL = Math.max(8, fx && !fx.classList.contains('collapsed') ? fx.getBoundingClientRect().right + 8 : 8);
+    const safeR = Math.min(vw - 8, gui ? gui.getBoundingClientRect().left - 8 : vw - 8);
+    const bar = document.getElementById('layerbar');
+    const barBottom = bar ? bar.getBoundingClientRect().bottom + 8 : 8;
     let left = box.x1 + gap;
-    if (left + w > vw - 8) left = box.x0 - gap - w;
-    if (left < 8) left = Math.max(8, Math.min(box.x1 - w - gap, vw - w - 8));
-    const top = Math.min(Math.max(8, box.y0), Math.max(8, vh - h - 8));
+    if (left + w > safeR) left = box.x0 - gap - w;
+    if (left < safeL) left = Math.min(box.x1, safeR) - w - gap;
+    left = Math.max(safeL, Math.min(left, safeR - w));
+    const top = Math.min(Math.max(barBottom, box.y0), Math.max(barBottom, vh - h - 8));
     this.root.style.left = `${left}px`;
     this.root.style.top = `${top}px`;
   }

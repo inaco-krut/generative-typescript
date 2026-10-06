@@ -337,4 +337,3 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 #layer-tools .gt-save { grid-template-columns: 1fr auto auto; margin-top: 6px; }
 #layer-tools .gt-text { font: inherit; color: var(--ui-text); background: var(--ui-bg-3); border: 1px solid var(--ui-line); border-radius: 6px; padding: 4px 8px; min-width: 0; }
 #layer-tools .gt-text::placeholder { color: var(--ui-dim); }
-#layer-tools { z-index: 1100; }
