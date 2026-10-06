@@ -1,14 +1,15 @@
 // Top-centre bar: pick a base layer to draw, select / size / tune / stack the layers you have, and set the canvas background.
 // Matches the glyph panel's look: dark rounded surface, segmented buttons, slim sliders with readouts.
 
-import { bgTypes, lookNames, lookSliders, sizePresets } from './baseLayers';
-import type { Background } from './presets';
+import { bgTypes, lookNames, lookSliders, modeNames, sizePresets, styleSliders } from './baseLayers';
+import type { Background, BaseLayer } from './presets';
 
 export interface LayerBarState {
   order: { index: number; look: number }[]; // back to front
   selected: number; // selected layer index, -1 = none
   armed: number; // look waiting for a rectangle to be drawn, -1 = none
-  sel: { look: number; vals: number[]; size: string; pos: number; count: number } | null;
+  sel: { layer: Readonly<BaseLayer>; pos: number; count: number } | null;
+  paletteNames: string[];
   bg: Background;
   paper: string; // palette colours used when the background colours are left on 'palette'
   ink: string;
@@ -19,6 +20,7 @@ export interface LayerBarHost {
   arm(look: number): void;
   select(index: number): void;
   setValue(slot: number, v: number): void;
+  setStyle(key: string, v: number | string): void;
   setSize(id: string): void;
   moveLayer(to: 'back' | 'down' | 'up' | 'front'): void;
   remove(): void;
@@ -69,6 +71,14 @@ export class LayerBar {
   private sizeSel = el('select', 'lb-select');
   private sliders: SliderRow[] = [];
   private stack: HTMLButtonElement[] = [];
+  private styleRow = el('div', 'lb-row');
+  private styleBtn = el('button', 'lb-btn', 'Style');
+  private styleOpen = true;
+  private modeSel = el('select', 'lb-select');
+  private modeField = el('label', 'lb-field');
+  private palSel = el('select', 'lb-select');
+  private palKey = '';
+  private styleSl: SliderRow[] = [];
   private bgBtn = el('button', 'lb-btn', 'Background');
   private bgRow = el('div', 'lb-row');
   private bgOpen = false;
@@ -134,8 +144,34 @@ export class LayerBar {
     const del = el('button', 'lb-btn lb-del', 'Delete');
     del.title = 'Remove this base layer (Delete key)';
     del.addEventListener('click', () => host.remove());
+    this.styleBtn.title = 'Show or hide this layer\'s landscape and colour settings';
+    this.styleBtn.addEventListener('click', () => {
+      this.styleOpen = !this.styleOpen;
+      this.update();
+    });
     seg.append(del);
-    this.editRow.append(sizeField, seg, sliderBox);
+    this.editRow.append(sizeField, seg, this.styleBtn, sliderBox);
+
+    // landscape + colour settings of the selected layer
+    modeNames.forEach((n, i) => {
+      const o = el('option', undefined, n);
+      o.value = String(i);
+      this.modeSel.append(o);
+    });
+    this.modeSel.addEventListener('change', () => host.setStyle('mode', Number(this.modeSel.value)));
+    this.modeField.append(el('span', 'lb-label', 'Letters act as'), this.modeSel);
+    this.palSel.addEventListener('change', () => host.setStyle('palette', this.palSel.value));
+    const palField = el('label', 'lb-field');
+    palField.append(el('span', 'lb-label', 'Palette'), this.palSel);
+    const styleBox = el('div', 'lb-sliders');
+    for (const d of styleSliders) {
+      const sl = slider((v) => host.setStyle(d.key, v));
+      sl.label.textContent = d.label;
+      this.styleSl.push(sl);
+      styleBox.append(sl.wrap);
+    }
+    this.styleRow.append(this.modeField, palField, styleBox);
+    this.styleRow.hidden = true;
     this.editRow.hidden = true;
 
     // row 4: background
@@ -170,7 +206,7 @@ export class LayerBar {
     this.bgRow.append(typeField, colorField, this.bgLineWrap, this.bgPalette, bgBox);
     this.bgRow.hidden = true;
 
-    r.append(top, chips, this.tabs, this.editRow, this.bgRow);
+    r.append(top, chips, this.tabs, this.editRow, this.styleRow, this.bgRow);
     // the bar is UI: clicks on it must never reach the canvas
     r.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
@@ -198,16 +234,39 @@ export class LayerBar {
 
     // the selected layer
     this.editRow.hidden = !s.sel;
+    if (!s.sel) this.styleRow.hidden = true;
     if (s.sel) {
-      const defs = lookSliders[s.sel.look] ?? lookSliders[0];
-      this.sizeSel.value = s.sel.size;
+      const L = s.sel.layer;
+      const vals = [L.a, L.b, L.c, L.d];
+      const defs = lookSliders[L.look] ?? lookSliders[0];
+      this.sizeSel.value = L.size;
       this.sliders.forEach((sl, i) => {
         const d = defs[i];
         sl.wrap.hidden = !d;
         if (!d) return;
         sl.label.textContent = d.label;
-        setSlider(sl, s.sel!.vals[i], d.min, d.max, d.step);
+        setSlider(sl, vals[i], d.min, d.max, d.step);
       });
+      this.styleBtn.classList.toggle('on', this.styleOpen);
+      this.styleRow.hidden = !this.styleOpen;
+      if (this.styleOpen) {
+        if (this.palKey !== s.paletteNames.join()) {
+          this.palKey = s.paletteNames.join();
+          this.palSel.replaceChildren(...['', ...s.paletteNames].map((n) => {
+            const o = el('option', undefined, n || 'Canvas palette');
+            o.value = n;
+            return o;
+          }));
+        }
+        this.palSel.value = L.palette;
+        this.modeField.hidden = L.look === 5;
+        this.modeSel.value = String(L.mode);
+        styleSliders.forEach((d, i) => {
+          const sl = this.styleSl[i];
+          sl.wrap.hidden = !!d.looks && !d.looks.includes(L.look);
+          if (!sl.wrap.hidden) setSlider(sl, L[d.key], d.min, d.max, d.step);
+        });
+      }
       this.stack[0].disabled = this.stack[1].disabled = s.sel.pos === 0;
       this.stack[2].disabled = this.stack[3].disabled = s.sel.pos === s.sel.count - 1;
     }

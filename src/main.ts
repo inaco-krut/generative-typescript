@@ -16,11 +16,10 @@ import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
 import { renderDetails } from './details';
 import {
-  builtinPresetNames, defaultGlyph, loadUserPresets, lookDefaults, presets, resolvePreset, storeUserPresets, type BaseLayer, type GlyphDef,
+  builtinPresetNames, defaultGlyph, defaultParams, layerStyle, loadUserPresets, lookDefaults, presets, resolvePreset, storeUserPresets, type BaseLayer, type GlyphDef,
   type Params,
 } from './presets';
 
-const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
 
 const params: Params = resolvePreset(presets['Blank space']);
 const store = new GlyphStore();
@@ -455,19 +454,39 @@ function stepSea(): void {
   }
   pointsMat.uniforms.uState.value = rts[simRead].texture;
   pointsMat.uniforms.uSide.value = simSide;
-  pointsMat.uniforms.uPx.value = Math.max(1, params.lineWidth * 2.1 * (uniforms.uRes.value.y / 800));
+  pointsMat.uniforms.uPx.value = Math.max(1, (seaLayer()?.lineWidth ?? 1.1) * 2.1 * (uniforms.uRes.value.y / 800));
+}
+
+/** Everything a base layer owns: its look sliders, landscape settings and palette. */
+function applyLayerUniforms(l: BaseLayer, lineScale = 1): void {
+  uniforms.uLook.value = l.look;
+  uniforms.uLookA.value = l.a;
+  uniforms.uLookB.value = l.b;
+  uniforms.uLookC.value = l.c;
+  uniforms.uLookD.value = l.d;
+  uniforms.uMode.value = l.mode;
+  uniforms.uInfluence.value = l.influence;
+  uniforms.uSlope.value = l.slope;
+  uniforms.uRough.value = l.rough;
+  uniforms.uFreq.value = l.freq;
+  uniforms.uWarp.value = l.warp;
+  uniforms.uDrift.value = l.drift;
+  uniforms.uSeed.value = l.seed;
+  uniforms.uSpacing.value = l.spacing;
+  uniforms.uLineW.value = l.lineWidth * lineScale;
+  uniforms.uTint.value = l.tint;
+  uniforms.uShade.value = l.shade;
+  paletteUniforms(l.palette || params.palette);
 }
 
 /**
  * Draws the artwork into `target`: the background and letters first, then every base layer back to front,
  * each clipped to its own rectangle (a scissor). Each layer brings its own letters, so they stay on top.
  */
-function drawArtwork(target: THREE.WebGLRenderTarget, advance = true): void {
+function drawArtwork(target: THREE.WebGLRenderTarget, advance = true, lineScale = 1): void {
   const sea = seaLayer();
   if (sea) {
-    uniforms.uLookB.value = sea.b; // the sea's simulation reads its settings from these
-    uniforms.uLookC.value = sea.c;
-    uniforms.uLookD.value = sea.d;
+    applyLayerUniforms(sea, lineScale); // the sea's simulation reads its settings from these
     if (advance) stepSea();
   }
   renderer.setRenderTarget(target);
@@ -476,12 +495,8 @@ function drawArtwork(target: THREE.WebGLRenderTarget, advance = true): void {
   for (const i of layerOrder(params.layers)) {
     const l = params.layers[i];
     if (l.look === 1 && floatRT) renderHeightField(); // renders elsewhere, so do it before the scissor is set
-    uniforms.uLook.value = l.look;
-    uniforms.uLookA.value = l.a;
-    uniforms.uLookB.value = l.b;
-    uniforms.uLookC.value = l.c;
-    uniforms.uLookD.value = l.d;
-    if (l.look === SEA && l !== sea) continue; // a second sea would just repeat the first
+    if (l.look === SEA && l !== sea) continue;
+    applyLayerUniforms(l, lineScale); // a second sea would just repeat the first
     const W = target.width;
     const H = target.height;
     target.scissor.set(Math.floor(l.x0 * W), Math.floor((1 - l.y1) * H), Math.ceil((l.x1 - l.x0) * W), Math.ceil((l.y1 - l.y0) * H));
@@ -490,6 +505,7 @@ function drawArtwork(target: THREE.WebGLRenderTarget, advance = true): void {
     renderer.render(l.look === SEA ? seaScene : scene, camera);
     target.scissorTest = false;
   }
+  paletteUniforms(params.palette); // the letters, labels and effects use the canvas palette
 }
 
 function renderFrame(): void {
@@ -632,14 +648,19 @@ const isMorphing = () => morphStart.some((t) => t >= 0);
 
 // ---------------------------------------------------------------- palette / params
 
-function applyPalette(): void {
-  const p = palettes[params.palette];
+function paletteUniforms(name: string): void {
+  const p = palettes[name] ?? palettes[params.palette];
   uniforms.uPaper.value.set(p.paper);
   uniforms.uInk.value.set(p.ink);
   uniforms.uIndex.value.set(p.index);
   uniforms.uLow.value.set(p.low);
   uniforms.uMid.value.set(p.mid);
   uniforms.uHigh.value.set(p.high);
+}
+
+function applyPalette(): void {
+  const p = palettes[params.palette];
+  paletteUniforms(params.palette);
   if (params.textAuto) params.textFill = p.index;
   document.body.style.background = p.paper;
 }
@@ -683,7 +704,6 @@ function syncUniforms(): void {
   postUniforms.uGlass.value = params.glass;
   postUniforms.uGlassLight.value = params.glassLight;
   postUniforms.uBlur.value = params.blur;
-  uniforms.uMode.value = params.mode;
   const n = Math.min(params.glyphs.length, MAX_GLYPHS);
   uniforms.uCount.value = n;
   stackOrder().forEach((gi, r) => { gOrder[r] = gi; });
@@ -714,18 +734,7 @@ function syncUniforms(): void {
   uniforms.uBlend.value = params.shapeBlend;
   uniforms.uShapeWarpScale.value = params.shapeWarpScale;
   uniforms.uShapeWarpSpeed.value = params.shapeWarpSpeed;
-  uniforms.uInfluence.value = params.influence;
-  uniforms.uSlope.value = params.slope;
   uniforms.uWobble.value = params.wobble;
-  uniforms.uRough.value = params.rough;
-  uniforms.uFreq.value = params.freq;
-  uniforms.uWarp.value = params.warp;
-  uniforms.uDrift.value = params.drift;
-  uniforms.uSeed.value = params.seed;
-  uniforms.uSpacing.value = params.spacing;
-  uniforms.uLineW.value = params.lineWidth;
-  uniforms.uTint.value = params.tint;
-  uniforms.uShade.value = params.shade;
   uniforms.uGrain.value = params.grain;
 }
 
@@ -776,7 +785,7 @@ const tip = <T extends { domElement: HTMLElement }>(c: T, text: string): T => {
 const presetCtl = tip(gui.add(presetState, 'preset', allPresetNames()).name('Preset').onChange(applyPreset), 'Start from a saved look');
 tip(gui.add(params, 'animate').name('Motion'), 'Pause to see map labels, resume to animate');
 const quick = { shuffle: () => actions.randomize() };
-tip(gui.add(quick, 'shuffle').name('Shuffle terrain & palette'), 'Random seed, scale and palette (or press space)');
+tip(gui.add(quick, 'shuffle').name('Shuffle terrain & palette'), 'Random seed, scale and palette for the selected base layer, or all of them (space re-rolls the seed)');
 const gPresets = gui.addFolder('Save presets').close();
 const nameCtl = gPresets.add(presetState, 'name').name('Name');
 
@@ -915,7 +924,6 @@ function applyVisibility(): void {
 }
 const hasLook = (...looks: number[]) => params.layers.some((l) => looks.includes(l.look));
 const isTopo = () => hasLook(TOPO);
-const usesTerrain = () => params.layers.some((l) => l.look !== SEA);
 
 const gGlyph = gui.addFolder('Glyph');
 const glyphPickCtl = showWhen(
@@ -969,18 +977,6 @@ showWhen(
   () => params.glyphs.length > 1,
 );
 
-const gLand = showWhen(gui.addFolder('Landscape'), () => params.layers.length > 0); // shapes the base layers
-showWhen(gLand.add(params, 'mode', MODES).name('Letters act as'), usesTerrain);
-tip(gLand.add(params, 'influence', 0.02, 0.8, 0.01).name('Reach'), 'How far from the letters the landscape is reshaped');
-showWhen(gLand.add(params, 'slope', 0, 3, 0.01).name('Relief'), usesTerrain);
-showWhen(gLand.add(params, 'rough', 0, 1.5, 0.01).name('Roughness'), usesTerrain);
-gLand.add(params, 'freq', 0.3, 8, 0.01).name('Scale');
-gLand.add(params, 'warp', 0, 2, 0.01).name('Turbulence');
-gLand.add(params, 'drift', 0, 0.3, 0.001).name('Evolution speed');
-gLand.add(params, 'seed', 0, 10, 0.001).name('Seed');
-showWhen(gLand.add(params, 'spacing', 0.004, 0.06, 0.001).name('Interval'), () => hasLook(0, 2));
-showWhen(gLand.add(params, 'lineWidth', 0.3, 4, 0.05).name('Line / dot weight'), () => params.layers.some((l) => l.look !== 2));
-
 const gColor = gui.addFolder('Colour & finish').close();
 gColor
   .add(params, 'palette', paletteNames)
@@ -989,8 +985,6 @@ gColor
     applyPalette();
     refreshGui();
   });
-showWhen(gColor.add(params, 'tint', 0, 1, 0.01).name('Elevation tint'), () => hasLook(0, 2, 3, 4));
-showWhen(gColor.add(params, 'shade', 0, 1, 0.01).name('Hillshade'), isTopo);
 gColor.add(params, 'grain', 0, 0.2, 0.001).name('Grain');
 gColor.add(params, 'blur', 0, 1, 0.01).name('Background blur');
 gColor
@@ -1028,11 +1022,14 @@ normaliseLabels();
 
 const actions = {
   randomize() {
-    params.seed = Math.random() * 10;
-    params.freq = 1.2 + Math.random() * 3.5;
-    params.warp = Math.random() * 1.2;
-    params.rough = 0.3 + Math.random() * 0.8;
-    params.spacing = 0.01 + Math.random() * 0.025;
+    const targets = params.layers[selectedLayer] ? [params.layers[selectedLayer]] : params.layers;
+    for (const l of targets) {
+      l.seed = Math.random() * 10;
+      l.freq = 1.2 + Math.random() * 3.5;
+      l.warp = Math.random() * 1.2;
+      l.rough = 0.3 + Math.random() * 0.8;
+      l.spacing = 0.01 + Math.random() * 0.025;
+    }
     params.palette = paletteNames[Math.floor(Math.random() * paletteNames.length)];
     applyPalette();
     refreshGui();
@@ -1134,7 +1131,7 @@ window.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
   e.preventDefault();
   if (e.key === ' ') {
-    params.seed = Math.random() * 10;
+    for (const l of params.layers[selectedLayer] ? [params.layers[selectedLayer]] : params.layers) l.seed = Math.random() * 10;
     refreshGui();
     return;
   }
@@ -1209,6 +1206,9 @@ async function computeDetails(key: string): Promise<void> {
       });
     }
     syncUniforms();
+    const topo = layerOrder(params.layers).map((i) => params.layers[i]).reverse().find((l) => l.look === TOPO) ?? params.layers[0];
+    applyLayerUniforms(topo); // labels follow the topmost topographic layer's terrain
+    paletteUniforms(params.palette);
     const prevRes = uniforms.uRes.value.clone();
     uniforms.uRes.value.set(gw, gh);
     uniforms.uOutputH.value = 1;
@@ -1243,13 +1243,13 @@ async function computeDetails(key: string): Promise<void> {
         spots: params.showSpots,
         notes: params.showNotes,
         avoidGlyph: params.glyphs.some((g) => g.opacity > 0.3),
-        spacing: params.spacing,
+        spacing: topo.spacing,
         metersPerLine: params.labelStep,
         baseElevation: params.labelBase,
         labelSize: params.labelSize,
         words: params.words.split(',').map((w) => w.trim()).filter(Boolean),
         caption: params.caption,
-        seed: params.seed,
+        seed: topo.seed,
         textColor: params.textAuto ? palettes[params.palette].index : params.textFill,
       },
       overlayCtx,
@@ -1325,10 +1325,9 @@ function startThumbs(): void {
   syncUniforms();
   const pxBefore = pointsMat.uniforms.uPx.value as number;
   // keep the look faithful at thumbnail size: lines and grain are measured in pixels
-  uniforms.uLineW.value = Math.max(0.35, (uniforms.uLineW.value * h) / prevRes.y);
   uniforms.uGrain.value = 0;
   pointsMat.uniforms.uPx.value = Math.max(1, (pxBefore * h) / prevRes.y);
-  drawArtwork(tinyRT[0], false);
+  drawArtwork(tinyRT[0], false, h / prevRes.y);
   pointsMat.uniforms.uPx.value = pxBefore;
   renderer.setRenderTarget(null);
   uniforms.uRes.value.copy(prevRes);
@@ -1532,7 +1531,7 @@ function createLayer(look: number, r: Rect): void {
   }
   const [a, b, c, d] = lookDefaults[look];
   const z = Math.max(-1, ...params.layers.map((l, i) => l.z ?? i)) + 1;
-  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z });
+  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z, ...layerStyle(defaultParams), seed: Math.random() * 10 });
   if (look === SEA) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9; // the sea draws the letters through their fill
   selectedLayer = params.layers.length - 1;
   selectedIdx = -1;
@@ -1617,7 +1616,8 @@ const layerBar = new LayerBar({
       order: order.map((index) => ({ index, look: params.layers[index].look })),
       selected: selectedLayer,
       armed: armedLook,
-      sel: l ? { look: l.look, vals: [l.a, l.b, l.c, l.d], size: l.size, pos: order.indexOf(selectedLayer), count: order.length } : null,
+      sel: l ? { layer: l, pos: order.indexOf(selectedLayer), count: order.length } : null,
+      paletteNames,
       bg: params.bg,
       paper: pal.paper,
       ink: pal.ink,
@@ -1635,6 +1635,11 @@ const layerBar = new LayerBar({
   setValue: (slot, v) => {
     const l = params.layers[selectedLayer];
     if (l) l[(['a', 'b', 'c', 'd'] as const)[slot]] = v;
+  },
+  setStyle: (key, v) => {
+    const l = params.layers[selectedLayer];
+    if (l) (l as unknown as Record<string, number | string>)[key] = v;
+    if (key === 'palette') toast(v ? `Layer palette: ${v}` : 'Layer follows the canvas palette');
   },
   setSize: (id) => {
     const l = params.layers[selectedLayer];

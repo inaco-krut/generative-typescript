@@ -72,3 +72,20 @@ export function layerOrder(layers: BaseLayer[]): number[] {
   const z = (i: number) => layers[i].z ?? i;
   return layers.map((_, i) => i).sort((a, b) => z(a) - z(b) || a - b);
 }
+
+/** Landscape / colour sliders every layer has; `looks` lists the looks they apply to (null = all). */
+export interface StyleSlider { key: 'influence' | 'slope' | 'rough' | 'freq' | 'warp' | 'drift' | 'seed' | 'spacing' | 'lineWidth' | 'tint' | 'shade'; label: string; min: number; max: number; step: number; looks: number[] | null }
+export const styleSliders: StyleSlider[] = [
+  { key: 'influence', label: 'Reach', min: 0.02, max: 0.8, step: 0.01, looks: null },
+  { key: 'slope', label: 'Relief', min: 0, max: 3, step: 0.01, looks: [0, 1, 2, 3, 4] },
+  { key: 'rough', label: 'Roughness', min: 0, max: 1.5, step: 0.01, looks: [0, 1, 2, 3, 4] },
+  { key: 'freq', label: 'Scale', min: 0.3, max: 8, step: 0.01, looks: null },
+  { key: 'warp', label: 'Turbulence', min: 0, max: 2, step: 0.01, looks: null },
+  { key: 'drift', label: 'Evolution', min: 0, max: 0.3, step: 0.001, looks: null },
+  { key: 'seed', label: 'Seed', min: 0, max: 10, step: 0.001, looks: null },
+  { key: 'spacing', label: 'Interval', min: 0.004, max: 0.06, step: 0.001, looks: [0, 2] },
+  { key: 'lineWidth', label: 'Line weight', min: 0.3, max: 4, step: 0.05, looks: [0, 1, 3, 4, 5] },
+  { key: 'tint', label: 'Tint', min: 0, max: 1, step: 0.01, looks: [0, 2, 3, 4] },
+  { key: 'shade', label: 'Hillshade', min: 0, max: 1, step: 0.01, looks: [0] },
+];
+export const modeNames = ['Offset lines', 'Mountain', 'Basin'];

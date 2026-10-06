@@ -38,6 +38,20 @@ export interface BaseLayer {
   x1: number;
   y1: number;
   size: string; // size preset id ('free' = drawn by hand)
+  // landscape and colour settings, individual to each layer
+  mode: number; // how letters act on the terrain: 0 offset lines, 1 mountain, 2 basin
+  influence: number;
+  slope: number;
+  rough: number;
+  freq: number;
+  warp: number;
+  drift: number;
+  seed: number;
+  spacing: number;
+  lineWidth: number;
+  tint: number;
+  shade: number;
+  palette: string; // '' follows the canvas palette
   z?: number; // stacking position among base layers (higher = in front); unset follows the list order
 }
 
@@ -400,12 +414,13 @@ export function resolvePreset(data: PresetData): Params {
     warp: shapeWarp ?? 0,
   };
   // older presets drew one look over the whole canvas: that becomes a full-canvas base layer
+  const merged = { ...structuredClone(defaultParams), ...structuredClone(rest) };
+  const style = layerStyle(merged); // layers without their own settings inherit the preset's shared ones
   const layers: BaseLayer[] = rest.layers
-    ? structuredClone(rest.layers).map((l) => ({ ...fullLayer(l.look ?? 0), ...l }))
-    : [{ ...fullLayer(look ?? 0), ...legacyLook(lookA, lookB, lookC, lookD) }];
+    ? structuredClone(rest.layers).map((l) => ({ ...fullLayer(l.look ?? 0, style), ...l }))
+    : [{ ...fullLayer(look ?? 0, style), ...legacyLook(lookA, lookB, lookC, lookD) }];
   return {
-    ...structuredClone(defaultParams),
-    ...structuredClone(rest),
+    ...merged,
     layers,
     bg: { ...defaultParams.bg, ...bg },
     glyphs: structuredClone(list).map((g) => ({ ...defaultGlyph, ...shared, ...g })),
@@ -422,9 +437,15 @@ export const lookDefaults: Record<number, [number, number, number, number]> = {
   5: [170, 0.55, 0.6, 0.55],
 };
 
-export function fullLayer(look: number): BaseLayer {
+/** The landscape settings a layer starts with, taken from a set of (shared, older-style) parameters. */
+export function layerStyle(p: Pick<Params, 'mode' | 'influence' | 'slope' | 'rough' | 'freq' | 'warp' | 'drift' | 'seed' | 'spacing' | 'lineWidth' | 'tint' | 'shade'>) {
+  const { mode, influence, slope, rough, freq, warp, drift, seed, spacing, lineWidth, tint, shade } = p;
+  return { mode, influence, slope, rough, freq, warp, drift, seed, spacing, lineWidth, tint, shade, palette: '' };
+}
+
+export function fullLayer(look: number, style = layerStyle(defaultParams)): BaseLayer {
   const [a, b, c, d] = lookDefaults[look] ?? lookDefaults[0];
-  return { look, a, b, c, d, x0: 0, y0: 0, x1: 1, y1: 1, size: 'full' };
+  return { look, a, b, c, d, x0: 0, y0: 0, x1: 1, y1: 1, size: 'full', ...style };
 }
 
 function legacyLook(a?: number, b?: number, c?: number, d?: number): Partial<BaseLayer> {
