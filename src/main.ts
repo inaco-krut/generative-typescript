@@ -9,6 +9,7 @@ import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type Effect
 import { EffectsPanel } from './effectsUI';
 import { GlyphTools } from './glyphTools';
 import { LayerBar } from './layerBar';
+import { LayerTools } from './layerTools';
 import { MAX_LAYERS, SEA, TOPO, fitSize, layerOrder } from './baseLayers';
 import { decodeImage, importImage, renderGlyphSDF, type DecodedImage } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
@@ -16,7 +17,7 @@ import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
 import { renderDetails } from './details';
 import {
-  builtinPresetNames, defaultGlyph, defaultParams, layerStyle, loadUserPresets, lookDefaults, presets, resolvePreset, storeUserPresets, type BaseLayer, type GlyphDef,
+  builtinPresetNames, defaultGlyph, defaultParams, layerStyle, loadLayerPresets, loadUserPresets, storeLayerPresets, lookDefaults, presets, resolvePreset, storeUserPresets, type BaseLayer, type GlyphDef, type LayerPreset,
   type Params,
 } from './presets';
 
@@ -1609,15 +1610,11 @@ window.addEventListener('keydown', (e) => {
 
 const layerBar = new LayerBar({
   state: () => {
-    const order = layerOrder(params.layers);
-    const l = params.layers[selectedLayer];
     const pal = palettes[params.palette];
     return {
-      order: order.map((index) => ({ index, look: params.layers[index].look })),
+      order: layerOrder(params.layers).map((index) => ({ index, look: params.layers[index].look })),
       selected: selectedLayer,
       armed: armedLook,
-      sel: l ? { layer: l, pos: order.indexOf(selectedLayer), count: order.length } : null,
-      paletteNames,
       bg: params.bg,
       paper: pal.paper,
       ink: pal.ink,
@@ -1632,6 +1629,17 @@ const layerBar = new LayerBar({
     selectedIdx = -1;
     armedLook = -1;
   },
+  setBg: (patch) => {
+    Object.assign(params.bg, patch);
+  },
+});
+const layerPresets: Record<string, LayerPreset> = loadLayerPresets();
+const layerTools = new LayerTools({
+  get: () => {
+    const l = params.layers[selectedLayer];
+    if (!l) return null;
+    return { index: selectedLayer, layer: l, pos: layerOrder(params.layers).indexOf(selectedLayer), count: params.layers.length, paletteNames };
+  },
   setValue: (slot, v) => {
     const l = params.layers[selectedLayer];
     if (l) l[(['a', 'b', 'c', 'd'] as const)[slot]] = v;
@@ -1639,7 +1647,6 @@ const layerBar = new LayerBar({
   setStyle: (key, v) => {
     const l = params.layers[selectedLayer];
     if (l) (l as unknown as Record<string, number | string>)[key] = v;
-    if (key === 'palette') toast(v ? `Layer palette: ${v}` : 'Layer follows the canvas palette');
   },
   setSize: (id) => {
     const l = params.layers[selectedLayer];
@@ -1650,10 +1657,32 @@ const layerBar = new LayerBar({
   },
   moveLayer: moveBaseLayer,
   remove: removeBaseLayer,
-  setBg: (patch) => {
-    Object.assign(params.bg, patch);
+  presetNames: () => Object.keys(layerPresets),
+  savePreset: (name) => {
+    const l = params.layers[selectedLayer];
+    if (!l) return;
+    const { x0, y0, x1, y1, size, z, ...look } = l;
+    void x0; void y0; void x1; void y1; void size; void z;
+    layerPresets[name] = structuredClone(look);
+    if (!storeLayerPresets(layerPresets)) toast('Browser storage is blocked, so this preset only lasts until you reload');
+  },
+  applyPreset: (name) => {
+    const l = params.layers[selectedLayer];
+    const pr = layerPresets[name];
+    if (!l || !pr) return;
+    if (pr.look === SEA && l.look !== SEA && seaLayer()) {
+      toast('Only one particle sea at a time');
+      return;
+    }
+    Object.assign(l, structuredClone(pr));
+    if (l.look === SEA) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9;
+  },
+  deletePreset: (name) => {
+    delete layerPresets[name];
+    storeLayerPresets(layerPresets);
   },
 });
+document.body.appendChild(layerTools.root);
 document.body.appendChild(layerBar.root);
 
 canvas.style.touchAction = 'none';
@@ -1831,6 +1860,7 @@ function updateLayerUI(): void {
     layerBox.style.height = `${(l.y1 - l.y0) * window.innerHeight}px`;
   }
   canvas.style.cursor = armedLook >= 0 ? 'crosshair' : canvas.style.cursor;
+  layerTools.update(l && selectedIdx < 0 ? { x0: l.x0 * window.innerWidth, x1: l.x1 * window.innerWidth, y0: l.y0 * window.innerHeight, y1: l.y1 * window.innerHeight } : null);
   layerBar.update();
 }
 

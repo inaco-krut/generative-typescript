@@ -456,3 +456,24 @@ function legacyLook(a?: number, b?: number, c?: number, d?: number): Partial<Bas
   if (d !== undefined) out.d = d;
   return out;
 }
+
+// --- base layer presets: a layer's look and settings (not its rectangle or stacking), kept in this browser ---
+export type LayerPreset = Omit<BaseLayer, 'x0' | 'y0' | 'x1' | 'y1' | 'size' | 'z'>;
+const LAYER_KEY = 'typographic-topography:layer-presets';
+
+export function loadLayerPresets(): Record<string, LayerPreset> {
+  try {
+    return JSON.parse(localStorage.getItem(LAYER_KEY) ?? '{}') as Record<string, LayerPreset>;
+  } catch {
+    return {};
+  }
+}
+
+export function storeLayerPresets(all: Record<string, LayerPreset>): boolean {
+  try {
+    localStorage.setItem(LAYER_KEY, JSON.stringify(all));
+    return true;
+  } catch {
+    return false;
+  }
+}
