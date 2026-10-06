@@ -77,6 +77,7 @@ uniform float uGOp[MAXG];     // per glyph: opacity
 uniform highp sampler2DArray uImgArr; // colour pixels of imported images, one layer per glyph (premultiplied)
 uniform float uGImg[MAXG];    // per glyph: 1 = draw the image's own colours
 uniform int uGOrder[MAXG];    // glyph indices from back to front
+uniform float uReact;         // 0 = the layer being drawn ignores the glyphs (set per base layer; 1 everywhere else)
 ${noiseGLSL}
 
 float sampleGlyph(int i, vec2 c) {
@@ -119,6 +120,7 @@ float smin(float a, float b, float k) {
 }
 
 float glyphDist(vec2 q) {
+  if (uReact < 0.5) return 4.0; // far from every letter: nothing bends around them
   float k = uBlend * 0.25;
   float best = 1e3;
   for (int i = 0; i < MAXG; i++) {

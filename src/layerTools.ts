@@ -7,7 +7,7 @@ import type { BaseLayer } from './presets';
 export interface LayerToolsHost {
   get(): { index: number; layer: Readonly<BaseLayer>; pos: number; count: number; paletteNames: string[] } | null;
   setValue(slot: number, v: number): void;
-  setStyle(key: string, v: number | string): void;
+  setStyle(key: string, v: number | string | boolean): void;
   setSize(id: string): void;
   moveLayer(to: 'back' | 'down' | 'up' | 'front'): void;
   remove(): void;
@@ -64,6 +64,7 @@ export class LayerTools {
   private sizeSel = el('select', 'gt-select');
   private lookRows: SliderRow[] = [];
   private blendSel = el('select', 'gt-select');
+  private reactBtns: HTMLButtonElement[] = [];
   private opacityRow: SliderRow;
   private modeSel = el('select', 'gt-select');
   private modeRow: HTMLElement;
@@ -129,7 +130,17 @@ export class LayerTools {
     this.blendSel.addEventListener('change', () => host.setStyle('blend', Number(this.blendSel.value)));
     this.opacityRow = sliderRow((v) => host.setStyle('opacity', v));
     this.opacityRow.label.textContent = 'Opacity';
-    r.append(selectRow('Blend', this.blendSel), this.opacityRow.row);
+    const reactSeg = el('div', 'gt-segs');
+    for (const [label, on] of [['On', true], ['Off', false]] as const) {
+      const b = el('button', 'gt-seg', label);
+      b.title = on ? 'The glyphs shape this layer' : 'This layer ignores the glyphs';
+      b.addEventListener('click', () => host.setStyle('react', on));
+      this.reactBtns.push(b);
+      reactSeg.append(b);
+    }
+    const reactRow = el('div', 'gt-row');
+    reactRow.append(el('span', 'gt-label', 'Glyphs'), reactSeg);
+    r.append(reactRow, selectRow('Blend', this.blendSel), this.opacityRow.row);
 
     for (let i = 0; i < 4; i++) {
       const s = sliderRow((v) => host.setValue(i, v));
@@ -213,6 +224,8 @@ export class LayerTools {
     this.delPreset.hidden = !this.picked;
     this.sizeSel.value = L.size;
     this.blendSel.value = String(L.blend);
+    this.reactBtns[0].classList.toggle('on', L.react !== false);
+    this.reactBtns[1].classList.toggle('on', L.react === false);
     setSlider(this.opacityRow, L.opacity, 0, 1, 0.01);
     const vals = [L.a, L.b, L.c, L.d];
     const defs = lookSliders[L.look] ?? lookSliders[0];

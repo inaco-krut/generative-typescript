@@ -82,6 +82,7 @@ const uniforms = {
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
   uMarks: { value: 0 },
+  uReact: { value: 1 },
   uLook: { value: 0 }, // set per base layer while drawing
   uLookA: { value: 0 },
   uLookB: { value: 0 },
@@ -119,7 +120,7 @@ const glyphUniforms = {
   uGPos: uniforms.uGPos, uGSize: uniforms.uGSize, uGMorph: uniforms.uGMorph, uGXform: uniforms.uGXform, uGOut: uniforms.uGOut,
   uBlend: uniforms.uBlend, uGSoft: uniforms.uGSoft, uGGrow: uniforms.uGGrow, uGWarp: uniforms.uGWarp,
   uGFill: uniforms.uGFill, uGStroke: uniforms.uGStroke, uGOp: uniforms.uGOp,
-  uImgArr: uniforms.uImgArr, uGImg: uniforms.uGImg, uGOrder: uniforms.uGOrder,
+  uImgArr: uniforms.uImgArr, uGImg: uniforms.uGImg, uGOrder: uniforms.uGOrder, uReact: uniforms.uReact,
   uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
 };
 
@@ -499,6 +500,7 @@ const copyMat = new THREE.ShaderMaterial({
 /** Everything a base layer owns: its look sliders, landscape settings and palette. */
 function applyLayerUniforms(l: BaseLayer, lineScale = 1): void {
   uniforms.uMarks.value = l.blend === 1 ? 1 : 0;
+  uniforms.uReact.value = l.react === false ? 0 : 1;
   uniforms.uLook.value = l.look;
   uniforms.uLookA.value = l.a;
   uniforms.uLookB.value = l.b;
@@ -572,6 +574,7 @@ function drawArtwork(target: THREE.WebGLRenderTarget, advance = true, lineScale 
     }
   }
   renderer.autoClear = wasAuto;
+  uniforms.uReact.value = 1; // effects, glass and the like always see the letters
   paletteUniforms(params.palette); // the letters, labels and effects use the canvas palette
 }
 
@@ -1285,6 +1288,7 @@ async function computeDetails(key: string): Promise<void> {
       if (topo.look !== TOPO) continue;
       applyLayerUniforms(topo);
       paletteUniforms(params.palette);
+      uniforms.uReact.value = topo.react === false ? 0 : 1;
       const prevRes = uniforms.uRes.value.clone();
       uniforms.uRes.value.set(gw, gh);
       uniforms.uOutputH.value = 1;
@@ -1293,6 +1297,7 @@ async function computeDetails(key: string): Promise<void> {
       renderer.setRenderTarget(null);
       uniforms.uOutputH.value = 0;
       uniforms.uRes.value.copy(prevRes);
+      uniforms.uReact.value = 1;
       const buf = new Float32Array(gw * gh * 4);
       renderer.readRenderTargetPixels(fieldTarget, 0, 0, gw, gh, buf);
       const field = new Float32Array(gw * gh);
@@ -1616,7 +1621,7 @@ function createLayer(look: number, r: Rect): void {
   }
   const [a, b, c, d] = lookDefaults[look];
   const z = Math.max(-1, ...params.layers.map((l, i) => l.z ?? i)) + 1;
-  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z, blend: 0, opacity: 1, ...layerStyle(defaultParams), seed: Math.random() * 10 });
+  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z, react: true, blend: 0, opacity: 1, ...layerStyle(defaultParams), seed: Math.random() * 10 });
   if (look === SEA) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9; // the sea draws the letters through their fill
   selectedLayer = params.layers.length - 1;
   selectedIdx = -1;
@@ -1730,7 +1735,7 @@ const layerTools = new LayerTools({
   },
   setStyle: (key, v) => {
     const l = params.layers[selectedLayer];
-    if (l) (l as unknown as Record<string, number | string>)[key] = v;
+    if (l) (l as unknown as Record<string, number | string | boolean>)[key] = v;
   },
   setSize: (id) => {
     const l = params.layers[selectedLayer];
