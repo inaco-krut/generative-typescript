@@ -89,3 +89,4 @@ export const styleSliders: StyleSlider[] = [
   { key: 'shade', label: 'Hillshade', min: 0, max: 1, step: 0.01, looks: [0] },
 ];
 export const modeNames = ['Offset lines', 'Mountain', 'Basin'];
+export const blendNames = ['Normal', 'Marks only', 'Multiply', 'Screen', 'Overlay', 'Difference', 'Add'];

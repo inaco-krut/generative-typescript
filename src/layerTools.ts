@@ -1,7 +1,7 @@
 // Floating panel that sits beside the selected base layer: size, the look's sliders, landscape + palette, stacking, delete.
 // Same surface and controls as the glyph panel (gt-* styles).
 
-import { lookNames, lookSliders, modeNames, sizePresets, styleSliders } from './baseLayers';
+import { blendNames, lookNames, lookSliders, modeNames, sizePresets, styleSliders } from './baseLayers';
 import type { BaseLayer } from './presets';
 
 export interface LayerToolsHost {
@@ -63,6 +63,8 @@ export class LayerTools {
   private sizeEl = el('span', 'gt-size');
   private sizeSel = el('select', 'gt-select');
   private lookRows: SliderRow[] = [];
+  private blendSel = el('select', 'gt-select');
+  private opacityRow: SliderRow;
   private modeSel = el('select', 'gt-select');
   private modeRow: HTMLElement;
   private palSel = el('select', 'gt-select');
@@ -117,6 +119,17 @@ export class LayerTools {
     }
     this.sizeSel.addEventListener('change', () => host.setSize(this.sizeSel.value));
     r.append(selectRow('Size', this.sizeSel));
+
+    blendNames.forEach((n, i) => {
+      const o = el('option', undefined, n);
+      o.value = String(i);
+      this.blendSel.append(o);
+    });
+    this.blendSel.title = 'How this layer combines with what is below it. Marks only hides its background and keeps just the lines, bands, grout or particles';
+    this.blendSel.addEventListener('change', () => host.setStyle('blend', Number(this.blendSel.value)));
+    this.opacityRow = sliderRow((v) => host.setStyle('opacity', v));
+    this.opacityRow.label.textContent = 'Opacity';
+    r.append(selectRow('Blend', this.blendSel), this.opacityRow.row);
 
     for (let i = 0; i < 4; i++) {
       const s = sliderRow((v) => host.setValue(i, v));
@@ -199,6 +212,8 @@ export class LayerTools {
     }
     this.delPreset.hidden = !this.picked;
     this.sizeSel.value = L.size;
+    this.blendSel.value = String(L.blend);
+    setSlider(this.opacityRow, L.opacity, 0, 1, 0.01);
     const vals = [L.a, L.b, L.c, L.d];
     const defs = lookSliders[L.look] ?? lookSliders[0];
     this.lookRows.forEach((s, i) => {

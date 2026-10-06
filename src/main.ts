@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
 import {
-  blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, compositeFragmentShader, fragmentShader,
+  blurBoxFragmentShader, blurDownFragmentShader, blurFragmentShader, compositeFragmentShader, copyFragmentShader, fragmentShader,
+  layerBlendFragmentShader,
   seaBackdropFragmentShader, particleInitFragmentShader, particlePointFragmentShader, particlePointVertexShader,
   particleSimFragmentShader, postFragmentShader, vertexShader,
 } from './shader';
@@ -80,6 +81,7 @@ const uniforms = {
   uShapeWarpScale: { value: params.shapeWarpScale },
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
+  uMarks: { value: 0 },
   uLook: { value: 0 }, // set per base layer while drawing
   uLookA: { value: 0 },
   uLookB: { value: 0 },
@@ -121,7 +123,7 @@ const glyphUniforms = {
   uShapeWarpScale: uniforms.uShapeWarpScale, uShapeWarpSpeed: uniforms.uShapeWarpSpeed,
 };
 
-const material = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader });
+const material = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader, transparent: true }); // 'marks only' layers output coverage as alpha
 scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
 
 // detail layer: a transparent canvas on top for labels, plus a mask that knocks contour lines out behind them
@@ -458,8 +460,45 @@ function stepSea(): void {
   pointsMat.uniforms.uPx.value = Math.max(1, (seaLayer()?.lineWidth ?? 1.1) * 2.1 * (uniforms.uRes.value.y / 800));
 }
 
+// scratch targets for layers that blend: the layer on its own, and the blended result
+const scratch = new Map<string, THREE.WebGLRenderTarget>();
+function scratchTarget(kind: string, w: number, h: number): THREE.WebGLRenderTarget {
+  const key = `${kind}${w}x${h}`;
+  let t = scratch.get(key);
+  if (!t) {
+    if (scratch.size > 8) {
+      for (const [k, v] of scratch) {
+        v.dispose();
+        scratch.delete(k);
+      }
+    }
+    t = new THREE.WebGLRenderTarget(w, h, { depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    scratch.set(key, t);
+  }
+  return t;
+}
+const layerTarget = (w: number, h: number) => scratchTarget('layer', w, h);
+const accTarget = (w: number, h: number) => scratchTarget('acc', w, h);
+const blendMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uBase: { value: null as THREE.Texture | null },
+    uLayer: { value: null as THREE.Texture | null },
+    uOutRes: { value: new THREE.Vector2() },
+    uBlendMode: { value: 0 },
+    uOpacity: { value: 1 },
+  },
+  vertexShader,
+  fragmentShader: layerBlendFragmentShader,
+});
+const copyMat = new THREE.ShaderMaterial({
+  uniforms: { uSrc: { value: null as THREE.Texture | null }, uOutRes: { value: new THREE.Vector2() } },
+  vertexShader,
+  fragmentShader: copyFragmentShader,
+});
+
 /** Everything a base layer owns: its look sliders, landscape settings and palette. */
 function applyLayerUniforms(l: BaseLayer, lineScale = 1): void {
+  uniforms.uMarks.value = l.blend === 1 ? 1 : 0;
   uniforms.uLook.value = l.look;
   uniforms.uLookA.value = l.a;
   uniforms.uLookB.value = l.b;
@@ -490,22 +529,49 @@ function drawArtwork(target: THREE.WebGLRenderTarget, advance = true, lineScale 
     applyLayerUniforms(sea, lineScale); // the sea's simulation reads its settings from these
     if (advance) stepSea();
   }
+  const wasAuto = renderer.autoClear;
+  renderer.autoClear = false; // layers must not wipe their rectangle first: transparent ones draw over what is below
   renderer.setRenderTarget(target);
   target.scissorTest = false;
   renderer.render(baseScene, camera);
+  const W = target.width;
+  const H = target.height;
   for (const i of layerOrder(params.layers)) {
     const l = params.layers[i];
-    if (l.look === SEA && l !== sea) continue;
+    if (l.look === SEA && l !== sea) continue; // a second sea would just repeat the first
     applyLayerUniforms(l, lineScale);
-    if (l.look === 1 && floatRT) renderHeightField(); // this layer's own terrain; renders elsewhere, so before the scissor // a second sea would just repeat the first
-    const W = target.width;
-    const H = target.height;
-    target.scissor.set(Math.floor(l.x0 * W), Math.floor((1 - l.y1) * H), Math.ceil((l.x1 - l.x0) * W), Math.ceil((l.y1 - l.y0) * H));
-    target.scissorTest = true;
-    renderer.setRenderTarget(target);
+    if (l.look === 1 && floatRT) renderHeightField(); // this layer's own terrain; renders elsewhere, so before the scissor
+    const marks = l.blend === 1;
+    const direct = l.blend === 0 && l.opacity >= 0.999; // plain opaque layers draw straight onto the canvas
+    const into = direct ? target : layerTarget(W, H);
+    if (!direct) {
+      renderer.setRenderTarget(into);
+      into.scissorTest = false;
+      const prevAlpha = renderer.getClearAlpha();
+      renderer.setClearAlpha(0);
+      renderer.clear();
+      renderer.setClearAlpha(prevAlpha);
+    }
+    into.scissor.set(Math.floor(l.x0 * W), Math.floor((1 - l.y1) * H), Math.ceil((l.x1 - l.x0) * W), Math.ceil((l.y1 - l.y0) * H));
+    into.scissorTest = true;
+    renderer.setRenderTarget(into);
+    seaBg.visible = !marks; // a sea in 'marks only' keeps just the particles
     renderer.render(l.look === SEA ? seaScene : scene, camera);
-    target.scissorTest = false;
+    seaBg.visible = true;
+    into.scissorTest = false;
+    if (!direct) {
+      // blend this layer over everything drawn so far, then put the result back
+      const acc = accTarget(W, H);
+      blendMat.uniforms.uBase.value = target.texture;
+      blendMat.uniforms.uLayer.value = into.texture;
+      blendMat.uniforms.uBlendMode.value = l.blend;
+      blendMat.uniforms.uOpacity.value = l.opacity;
+      fxPass(blendMat, acc);
+      copyMat.uniforms.uSrc.value = acc.texture;
+      fxPass(copyMat, target);
+    }
   }
+  renderer.autoClear = wasAuto;
   paletteUniforms(params.palette); // the letters, labels and effects use the canvas palette
 }
 
@@ -1550,7 +1616,7 @@ function createLayer(look: number, r: Rect): void {
   }
   const [a, b, c, d] = lookDefaults[look];
   const z = Math.max(-1, ...params.layers.map((l, i) => l.z ?? i)) + 1;
-  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z, ...layerStyle(defaultParams), seed: Math.random() * 10 });
+  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z, blend: 0, opacity: 1, ...layerStyle(defaultParams), seed: Math.random() * 10 });
   if (look === SEA) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9; // the sea draws the letters through their fill
   selectedLayer = params.layers.length - 1;
   selectedIdx = -1;

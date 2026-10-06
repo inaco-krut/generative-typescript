@@ -204,6 +204,8 @@ uniform float uGrain;
 uniform sampler2D uMask;   // detail layer: white where contour lines are knocked out
 uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
+uniform float uMarks;      // 1 = output only the marks (lines, bands, grout), with transparency elsewhere
+float gMark = 1.0;         // coverage of the marks, written by each look
 uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid (5 = particle sea, drawn by its own passes)
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
@@ -297,6 +299,7 @@ vec3 lookTopo(float d, float H) {
   major *= knock;
   col = mix(col, uInk, minor * (1.0 - isIndex) * 0.9);
   col = mix(col, uIndex, major * isIndex);
+  gMark = max(minor * (1.0 - isIndex) * 0.9, major * isIndex);
   col = mix(col, gp.rgb, gp.a * imf); // pictures sit on top of the contour lines
   return col;
 }
@@ -310,16 +313,19 @@ vec3 lookRidge(vec2 fc) {
   float k0 = floor(fc.y / S);
   vec3 ink = uIndex;
   vec3 col = uPaper;
+  float cov = 0.0;
   for (int j = K; j >= -K; j--) {                // back (top) to front (bottom)
     float rk = (k0 + float(j) + 0.5) * S;
     vec2 hd = texture(uHeightTex, vec2(fc.x / uRes.x, rk / uRes.y)).rg; // height, distance to the letters
     float h = hd.x + uLookC * 0.25 * (1.0 - smoothstep(-0.015, 0.015, hd.y)); // letters rise as plateaus
     float yk = rk + clamp(h * scale, -float(K) * S, float(K) * S);
-    if (fc.y < yk) col = uPaper;                  // hide whatever is behind this line
+    if (fc.y < yk) { col = uPaper; cov = 0.0; }   // hide whatever is behind this line
     float sl = abs(dFdx(yk));
     float m = lineMask(abs(fc.y - yk) / sqrt(1.0 + sl * sl), 1.0, max(uLineW * 1.4, 1.0));
     col = mix(col, ink, m);
+    cov = mix(cov, 1.0, m);
   }
+  gMark = cov;
   return col;
 }
 
@@ -330,6 +336,7 @@ vec3 lookBands(float H) {
   float aa = max(fwidth(tri), 1e-4);
   float m = smoothstep(uLookA - aa, uLookA + aa, tri);
   vec3 light = mix(uPaper, ramp(toneOf(floor(v) * uSpacing)), uTint);
+  gMark = m;
   return mix(light, uInk, m);
 }
 
@@ -363,6 +370,7 @@ vec3 lookMosaic(vec2 q, float d) {
   float wc = 0.04 * uLookC * max(uLineW, 0.3);
   float aa = max(fwidth(edge), 1e-4);
   float grout = 1.0 - smoothstep(wc * 0.5 - aa, wc * 0.5 + aa, edge);
+  gMark = grout * 0.9;
   return mix(col, uInk, grout * 0.9);
 }
 
@@ -391,6 +399,7 @@ vec3 lookGrid(vec2 q, float H) {
   float m = max(lx, ly);
   float major = max(lx * isMajor.x, ly * isMajor.y);
   col = mix(col, uInk, m * 0.85);
+  gMark = max(m * 0.85, major);
   return mix(col, uIndex, major);
 }
 
@@ -411,7 +420,7 @@ void main() {
   else if (uLook == 4) col = lookGrid(q, H);
   else col = lookTopo(d, H);
 
-  if (uLook != 0) {
+  if (uLook != 0 && uMarks < 0.5) {
     // the letters' fill sits on top of the other looks
     float cv;
     float imf;
@@ -420,7 +429,7 @@ void main() {
   }
 
   col += (hash(gl_FragCoord.xy) - 0.5) * uGrain;
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col, uMarks > 0.5 ? gMark : 1.0);
 }
 `;
 
@@ -797,5 +806,38 @@ void main() {
   vec3 col = mix(base, gp.rgb, gp.a);
   col += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * uGrain;
   gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// Composites a base layer (premultiplied, drawn into its own target) over what is below it with a blend mode.
+export const layerBlendFragmentShader = /* glsl */ `
+precision highp float;
+uniform sampler2D uBase;
+uniform sampler2D uLayer;
+uniform vec2 uOutRes;
+uniform int uBlendMode;   // 0 normal, 1 marks only (normal), 2 multiply, 3 screen, 4 overlay, 5 difference, 6 add
+uniform float uOpacity;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uOutRes;
+  vec3 b = texture(uBase, uv).rgb;
+  vec4 l = texture(uLayer, uv);
+  vec3 s = l.rgb / max(l.a, 1e-4);
+  float a = l.a * uOpacity;
+  vec3 r = s;
+  if (uBlendMode == 2) r = b * s;
+  else if (uBlendMode == 3) r = 1.0 - (1.0 - b) * (1.0 - s);
+  else if (uBlendMode == 4) r = mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b));
+  else if (uBlendMode == 5) r = abs(b - s);
+  else if (uBlendMode == 6) r = min(b + s, 1.0);
+  gl_FragColor = vec4(mix(b, r, a), 1.0);
+}
+`;
+
+export const copyFragmentShader = /* glsl */ `
+precision highp float;
+uniform sampler2D uSrc;
+uniform vec2 uOutRes;
+void main() {
+  gl_FragColor = vec4(texture(uSrc, gl_FragCoord.xy / uOutRes).rgb, 1.0);
 }
 `;

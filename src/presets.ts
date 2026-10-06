@@ -52,6 +52,8 @@ export interface BaseLayer {
   tint: number;
   shade: number;
   palette: string; // '' follows the canvas palette
+  blend: number; // 0 normal, 1 marks only (hides the layer's background), 2 multiply, 3 screen, 4 overlay, 5 difference, 6 add
+  opacity: number;
   z?: number; // stacking position among base layers (higher = in front); unset follows the list order
 }
 
@@ -445,7 +447,7 @@ export function layerStyle(p: Pick<Params, 'mode' | 'influence' | 'slope' | 'rou
 
 export function fullLayer(look: number, style = layerStyle(defaultParams)): BaseLayer {
   const [a, b, c, d] = lookDefaults[look] ?? lookDefaults[0];
-  return { look, a, b, c, d, x0: 0, y0: 0, x1: 1, y1: 1, size: 'full', ...style };
+  return { look, a, b, c, d, x0: 0, y0: 0, x1: 1, y1: 1, size: 'full', blend: 0, opacity: 1, ...style };
 }
 
 function legacyLook(a?: number, b?: number, c?: number, d?: number): Partial<BaseLayer> {
