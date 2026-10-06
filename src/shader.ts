@@ -756,16 +756,46 @@ void main() {
 `;
 
 // Particle sea backdrop: paper colour with the letters filled in underneath the particles.
+// Paper (or the chosen background) plus the letters. Used as the canvas base, and inside particle-sea layers.
 export const seaBackdropFragmentShader = /* glsl */ `
 precision highp float;
 uniform vec2 uRes;
 uniform vec3 uPaper;
+uniform float uPattern;     // 1 = draw the canvas background (colour + pattern), 0 = plain palette paper
+uniform vec3 uBgColor;
+uniform vec3 uBgLine;
+uniform int uBgType;        // 0 solid, 1 grid, 2 horizontal, 3 vertical, 4 dots, 5 diagonal
+uniform float uBgSpacing;   // share of the short side
+uniform float uBgWeight;    // px
+uniform float uBgStrength;
+uniform float uGrain;
 ${glyphGLSL}
+float bgLine(float v, float period) {
+  float d = abs(fract(v / period - 0.5) - 0.5) * period;
+  return clamp(uBgWeight * 0.5 - d + 0.5, 0.0, 1.0);
+}
 void main() {
   vec2 q = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
+  vec3 base = uPattern > 0.5 ? uBgColor : uPaper;
+  if (uPattern > 0.5 && uBgType > 0) {
+    float period = max(uBgSpacing * min(uRes.x, uRes.y), 3.0);
+    vec2 p = gl_FragCoord.xy;
+    float m = 0.0;
+    if (uBgType == 1) m = max(bgLine(p.x, period), bgLine(p.y, period));
+    else if (uBgType == 2) m = bgLine(p.y, period);
+    else if (uBgType == 3) m = bgLine(p.x, period);
+    else if (uBgType == 5) m = bgLine((p.x + p.y) * 0.70710678, period);
+    else {
+      vec2 c = (floor(p / period) + 0.5) * period;
+      m = clamp(uBgWeight * 1.2 - length(p - c) + 0.5, 0.0, 1.0);
+    }
+    base = mix(base, uBgLine, m * uBgStrength);
+  }
   float cv;
   float imf;
   vec4 gp = glyphPaint(q, cv, imf);
-  gl_FragColor = vec4(mix(uPaper, gp.rgb, gp.a), 1.0);
+  vec3 col = mix(base, gp.rgb, gp.a);
+  col += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * uGrain;
+  gl_FragColor = vec4(col, 1.0);
 }
 `;

@@ -8,18 +8,21 @@ import {
 import { effectDefs, effectFragmentShader, newLayer, type EffectDef, type EffectLayer } from './effects';
 import { EffectsPanel } from './effectsUI';
 import { GlyphTools } from './glyphTools';
+import { LayerBar } from './layerBar';
+import { MAX_LAYERS, SEA, TOPO, fitSize, layerOrder } from './baseLayers';
 import { decodeImage, importImage, renderGlyphSDF, type DecodedImage } from './glyph';
 import { GlyphStore, MAX_GLYPHS, boundsOf, defaultBounds, unionBounds } from './glyphs';
 import { builtinFonts, ensureFont, loadFontFile, type FontDef } from './fonts';
 import { palettes, paletteNames } from './palettes';
 import { renderDetails } from './details';
 import {
-  builtinPresetNames, defaultGlyph, loadUserPresets, presets, resolvePreset, storeUserPresets, type GlyphDef, type Params,
+  builtinPresetNames, defaultGlyph, loadUserPresets, lookDefaults, presets, resolvePreset, storeUserPresets, type BaseLayer, type GlyphDef,
+  type Params,
 } from './presets';
 
 const MODES = { 'Offset lines': 0, Mountain: 1, Basin: 2 } as const;
 
-const params: Params = resolvePreset(presets.hubworks);
+const params: Params = resolvePreset(presets['Blank space']);
 const store = new GlyphStore();
 // per-glyph animation state; these arrays are shared with the shader uniforms
 const gPos = Array.from({ length: MAX_GLYPHS }, () => new THREE.Vector2());
@@ -39,6 +42,8 @@ const morphStart: number[] = new Array(MAX_GLYPHS).fill(-1);
 const loadTokens: number[] = new Array(MAX_GLYPHS).fill(0);
 let activeIdx = 0; // glyph the panel edits
 let selectedIdx = -1; // glyph with the selection box (-1 = none)
+let selectedLayer = -1; // base layer with the selection box (-1 = none)
+let armedLook = -1; // base layer look waiting for a rectangle to be drawn (-1 = none)
 
 // ---------------------------------------------------------------- renderer
 
@@ -75,11 +80,11 @@ const uniforms = {
   uShapeWarpScale: { value: params.shapeWarpScale },
   uShapeWarpSpeed: { value: params.shapeWarpSpeed },
   uMode: { value: params.mode },
-  uLook: { value: params.look },
-  uLookA: { value: params.lookA },
-  uLookB: { value: params.lookB },
-  uLookC: { value: params.lookC },
-  uLookD: { value: params.lookD },
+  uLook: { value: 0 }, // set per base layer while drawing
+  uLookA: { value: 0 },
+  uLookB: { value: 0 },
+  uLookC: { value: 0 },
+  uLookD: { value: 0 },
   uHeightTex: { value: null as THREE.Texture | null },
   uInfluence: { value: params.influence },
   uSlope: { value: params.slope },
@@ -329,19 +334,29 @@ let simDt = 0;
 let simInit = true;
 let seaPoints: THREE.Points | null = null;
 const seaScene = new THREE.Scene();
-const seaBg = new THREE.Mesh(
-  new THREE.PlaneGeometry(2, 2),
+// the canvas background (colour, pattern, letters); particle-sea layers use the same shader with plain paper
+const bgUniforms = {
+  uBgColor: { value: new THREE.Color('#000') },
+  uBgLine: { value: new THREE.Color('#000') },
+  uBgType: { value: 0 },
+  uBgSpacing: { value: 0.05 },
+  uBgWeight: { value: 1 },
+  uBgStrength: { value: 0.35 },
+};
+const backdropMaterial = (pattern: number) =>
   new THREE.ShaderMaterial({
-    uniforms: { uRes: uniforms.uRes, uPaper: uniforms.uPaper, ...glyphUniforms },
+    uniforms: { uRes: uniforms.uRes, uPaper: uniforms.uPaper, uGrain: uniforms.uGrain, uPattern: { value: pattern }, ...bgUniforms, ...glyphUniforms },
     vertexShader,
     fragmentShader: seaBackdropFragmentShader,
     depthTest: false,
     depthWrite: false,
-  }),
-);
+  });
+const seaBg = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), backdropMaterial(0));
 seaBg.renderOrder = 0;
 seaBg.frustumCulled = false;
 seaScene.add(seaBg);
+const baseScene = new THREE.Scene();
+baseScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), backdropMaterial(1)));
 
 const simMat = new THREE.ShaderMaterial({
   uniforms: {
@@ -377,8 +392,11 @@ const pointsMat = new THREE.ShaderMaterial({
   depthWrite: false,
 });
 
+/** The particle-sea layer (only one runs at a time). */
+const seaLayer = (): BaseLayer | undefined => params.layers.find((l) => l.look === SEA);
+
 function ensureSea(): void {
-  const side = Math.ceil(Math.sqrt(Math.max(10, Math.round(params.lookA)) * 1000));
+  const side = Math.ceil(Math.sqrt(Math.max(10, Math.round(seaLayer()?.a ?? lookDefaults[SEA][0])) * 1000));
   if (simRT && side === simSide) return;
   simRT?.forEach((r) => r.dispose());
   simRT = [0, 1].map(
@@ -440,12 +458,42 @@ function stepSea(): void {
   pointsMat.uniforms.uPx.value = Math.max(1, params.lineWidth * 2.1 * (uniforms.uRes.value.y / 800));
 }
 
+/**
+ * Draws the artwork into `target`: the background and letters first, then every base layer back to front,
+ * each clipped to its own rectangle (a scissor). Each layer brings its own letters, so they stay on top.
+ */
+function drawArtwork(target: THREE.WebGLRenderTarget, advance = true): void {
+  const sea = seaLayer();
+  if (sea) {
+    uniforms.uLookB.value = sea.b; // the sea's simulation reads its settings from these
+    uniforms.uLookC.value = sea.c;
+    uniforms.uLookD.value = sea.d;
+    if (advance) stepSea();
+  }
+  renderer.setRenderTarget(target);
+  target.scissorTest = false;
+  renderer.render(baseScene, camera);
+  for (const i of layerOrder(params.layers)) {
+    const l = params.layers[i];
+    if (l.look === 1 && floatRT) renderHeightField(); // renders elsewhere, so do it before the scissor is set
+    uniforms.uLook.value = l.look;
+    uniforms.uLookA.value = l.a;
+    uniforms.uLookB.value = l.b;
+    uniforms.uLookC.value = l.c;
+    uniforms.uLookD.value = l.d;
+    if (l.look === SEA && l !== sea) continue; // a second sea would just repeat the first
+    const W = target.width;
+    const H = target.height;
+    target.scissor.set(Math.floor(l.x0 * W), Math.floor((1 - l.y1) * H), Math.ceil((l.x1 - l.x0) * W), Math.ceil((l.y1 - l.y0) * H));
+    target.scissorTest = true;
+    renderer.setRenderTarget(target);
+    renderer.render(l.look === SEA ? seaScene : scene, camera);
+    target.scissorTest = false;
+  }
+}
+
 function renderFrame(): void {
-  if (params.look === 1 && floatRT) renderHeightField();
-  if (params.look === 5) stepSea();
-  renderer.setRenderTarget(sceneRT);
-  if (params.look === 5) renderer.render(seaScene, camera);
-  else renderer.render(scene, camera);
+  drawArtwork(sceneRT);
   const stacked = runEffects();
   const src = stacked ?? sceneRT.texture;
   postUniforms.uScene.value = src;
@@ -656,11 +704,13 @@ function syncUniforms(): void {
     gStroke[i].set(glyphStrokeHex(g));
     if ((g.text2 ?? '').trim()) gMorph[i] = Math.min(Math.max(g.morph, 0), 1); // manual morph
   }
-  uniforms.uLook.value = params.look;
-  uniforms.uLookA.value = params.lookA;
-  uniforms.uLookB.value = params.lookB;
-  uniforms.uLookC.value = params.lookC;
-  uniforms.uLookD.value = params.lookD;
+  const bg = params.bg;
+  bgUniforms.uBgColor.value.set(bg.color || palettes[params.palette].paper);
+  bgUniforms.uBgLine.value.set(bg.line || palettes[params.palette].ink);
+  bgUniforms.uBgType.value = bg.type;
+  bgUniforms.uBgSpacing.value = bg.spacing;
+  bgUniforms.uBgWeight.value = bg.weight * (uniforms.uRes.value.y / 800);
+  bgUniforms.uBgStrength.value = bg.strength;
   uniforms.uBlend.value = params.shapeBlend;
   uniforms.uShapeWarpScale.value = params.shapeWarpScale;
   uniforms.uShapeWarpSpeed.value = params.shapeWarpSpeed;
@@ -699,7 +749,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(Math.ma
 
 const userPresets = loadUserPresets();
 const allPresetNames = () => [...builtinPresetNames, ...Object.keys(userPresets).filter((n) => !(n in presets))];
-const presetState = { preset: 'hubworks', name: '' };
+const presetState = { preset: 'Blank space', name: '' };
 
 function applyPreset(name: string): void {
   Object.assign(params, resolvePreset(presets[name] ?? userPresets[name]));
@@ -708,11 +758,12 @@ function applyPreset(name: string): void {
   params.glyphs = params.glyphs.slice(0, MAX_GLYPHS);
   activeIdx = 0;
   selectedIdx = -1;
+  selectedLayer = -1;
+  armedLook = -1;
   applyPalette();
   refreshGlyphPicker();
   refreshGui();
   panel.rebuild();
-  relabelLook(false);
   normaliseLabels();
   applyVisibility();
   refreshGui();
@@ -862,8 +913,9 @@ const showWhen = <T extends { show: (v: boolean) => unknown }>(c: T, when: () =>
 function applyVisibility(): void {
   for (const r of visRules) r.show(r.when());
 }
-const isTopo = () => params.look === 0;
-const isSea = () => params.look === 5;
+const hasLook = (...looks: number[]) => params.layers.some((l) => looks.includes(l.look));
+const isTopo = () => hasLook(TOPO);
+const usesTerrain = () => params.layers.some((l) => l.look !== SEA);
 
 const gGlyph = gui.addFolder('Glyph');
 const glyphPickCtl = showWhen(
@@ -917,73 +969,17 @@ showWhen(
   () => params.glyphs.length > 1,
 );
 
-// How the landscape is drawn. The three sliders mean different things per look.
-const LOOKS = { 'Topographic map': 0, Ridgeline: 1, 'Op-art bands': 2, Mosaic: 3, 'Warped grid': 4, 'Particle sea': 5 } as const;
-type LookKey = 'lookA' | 'lookB' | 'lookC' | 'lookD';
-interface LookSlider { label: string; min: number; max: number; step: number; value: number }
-const lookDefs: Record<number, (LookSlider | null)[]> = {
-  0: [null, null, null, null],
-  1: [
-    { label: 'rows', min: 16, max: 160, step: 1, value: 64 },
-    { label: 'relief height', min: 0, max: 4, step: 0.01, value: 1.8 },
-    { label: 'letter lift', min: 0, max: 2, step: 0.01, value: 0.8 },
-    null,
-  ],
-  2: [{ label: 'band thickness', min: 0.1, max: 0.9, step: 0.01, value: 0.5 }, null, null, null],
-  3: [
-    { label: 'tile count', min: 6, max: 80, step: 0.5, value: 22 },
-    { label: 'density near letters', min: 0, max: 5, step: 0.05, value: 1.8 },
-    { label: 'grout width', min: 0.2, max: 4, step: 0.05, value: 1.5 },
-    null,
-  ],
-  4: [
-    { label: 'grid cells', min: 6, max: 90, step: 0.5, value: 28 },
-    { label: 'lens strength', min: 0, max: 14, step: 0.05, value: 6 },
-    null,
-    null,
-  ],
-  5: [
-    { label: 'particles (thousands)', min: 10, max: 400, step: 1, value: 170 },
-    { label: 'current speed', min: 0, max: 1.5, step: 0.01, value: 0.55 },
-    { label: 'letters: attract ↔ repel', min: -1, max: 1, step: 0.01, value: 0.6 },
-    { label: 'slide along edges', min: 0, max: 1, step: 0.01, value: 0.55 },
-  ],
-};
-
-const gLook = gui.addFolder('Look');
-const lookCtl = gLook.add(params, 'look', LOOKS).name('Style');
-const lookKeys: LookKey[] = ['lookA', 'lookB', 'lookC', 'lookD'];
-const lookSliders = lookKeys.map((key) => gLook.add(params, key, 0, 1, 0.01));
-showWhen(gLook.add(params, 'lineWidth', 0.3, 4, 0.05).name('Line / dot weight'), () => params.look !== 2);
-function relabelLook(resetValues: boolean): void {
-  const defs = lookDefs[params.look] ?? lookDefs[0];
-  lookSliders.forEach((c, i) => {
-    const d = defs[i];
-    c.show(!!d);
-    if (!d) return;
-    c.name(d.label).min(d.min).max(d.max).step(d.step);
-    if (resetValues) params[lookKeys[i]] = d.value;
-    c.updateDisplay();
-  });
-}
-lookCtl.onChange(() => {
-  relabelLook(true);
-  if (params.look === 5) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9; // the sea draws the letters through their fill
-  applyVisibility();
-  refreshGui();
-});
-relabelLook(false);
-
-const gLand = gui.addFolder('Landscape');
-showWhen(gLand.add(params, 'mode', MODES).name('Letters act as'), () => !isSea());
+const gLand = showWhen(gui.addFolder('Landscape'), () => params.layers.length > 0); // shapes the base layers
+showWhen(gLand.add(params, 'mode', MODES).name('Letters act as'), usesTerrain);
 tip(gLand.add(params, 'influence', 0.02, 0.8, 0.01).name('Reach'), 'How far from the letters the landscape is reshaped');
-showWhen(gLand.add(params, 'slope', 0, 3, 0.01).name('Relief'), () => !isSea());
-showWhen(gLand.add(params, 'rough', 0, 1.5, 0.01).name('Roughness'), () => !isSea());
+showWhen(gLand.add(params, 'slope', 0, 3, 0.01).name('Relief'), usesTerrain);
+showWhen(gLand.add(params, 'rough', 0, 1.5, 0.01).name('Roughness'), usesTerrain);
 gLand.add(params, 'freq', 0.3, 8, 0.01).name('Scale');
 gLand.add(params, 'warp', 0, 2, 0.01).name('Turbulence');
 gLand.add(params, 'drift', 0, 0.3, 0.001).name('Evolution speed');
 gLand.add(params, 'seed', 0, 10, 0.001).name('Seed');
-showWhen(gLand.add(params, 'spacing', 0.004, 0.06, 0.001).name('Interval'), () => params.look === 0 || params.look === 2);
+showWhen(gLand.add(params, 'spacing', 0.004, 0.06, 0.001).name('Interval'), () => hasLook(0, 2));
+showWhen(gLand.add(params, 'lineWidth', 0.3, 4, 0.05).name('Line / dot weight'), () => params.layers.some((l) => l.look !== 2));
 
 const gColor = gui.addFolder('Colour & finish').close();
 gColor
@@ -993,7 +989,7 @@ gColor
     applyPalette();
     refreshGui();
   });
-showWhen(gColor.add(params, 'tint', 0, 1, 0.01).name('Elevation tint'), () => [0, 2, 3, 4].includes(params.look));
+showWhen(gColor.add(params, 'tint', 0, 1, 0.01).name('Elevation tint'), () => hasLook(0, 2, 3, 4));
 showWhen(gColor.add(params, 'shade', 0, 1, 0.01).name('Hillshade'), isTopo);
 gColor.add(params, 'grain', 0, 0.2, 0.001).name('Grain');
 gColor.add(params, 'blur', 0, 1, 0.01).name('Background blur');
@@ -1171,6 +1167,25 @@ function detailKey(): string {
   return `${JSON.stringify({ ...params, animate: false, glass: 0, glassLight: 0, blur: 0, effects: [] })}|${size.x}x${size.y}|${time.toFixed(4)}|${sdfVersion}`;
 }
 
+/** Labels belong to topographic layers: keep them inside those rectangles, and out from under layers drawn above. */
+const clipCanvas = document.createElement('canvas');
+function clipDetailsToLayers(): void {
+  const W = overlay.width;
+  const H = overlay.height;
+  clipCanvas.width = W;
+  clipCanvas.height = H;
+  const c = clipCanvas.getContext('2d')!;
+  for (const i of layerOrder(params.layers)) {
+    const l = params.layers[i];
+    c.globalCompositeOperation = l.look === TOPO ? 'source-over' : 'destination-out';
+    c.fillRect(l.x0 * W, l.y0 * H, (l.x1 - l.x0) * W, (l.y1 - l.y0) * H);
+  }
+  overlayCtx.save();
+  overlayCtx.globalCompositeOperation = 'destination-in';
+  overlayCtx.drawImage(clipCanvas, 0, 0);
+  overlayCtx.restore();
+}
+
 async function computeDetails(key: string): Promise<void> {
   if (computing) return;
   computing = true;
@@ -1240,6 +1255,7 @@ async function computeDetails(key: string): Promise<void> {
       overlayCtx,
       maskCtx,
     );
+    clipDetailsToLayers();
     maskTex.needsUpdate = true;
     overlayTex.needsUpdate = true;
     uniforms.uMaskOn.value = 1;
@@ -1251,7 +1267,7 @@ async function computeDetails(key: string): Promise<void> {
 }
 
 function updateDetails(): void {
-  const want = fieldSupported && !params.animate && params.details && params.look === 0 && !isMorphing();
+  const want = fieldSupported && !params.animate && params.details && isTopo() && !isMorphing();
   if (!want) {
     if (shownKey || pendingKey) hideDetails();
     pendingKey = '';
@@ -1311,12 +1327,9 @@ function startThumbs(): void {
   // keep the look faithful at thumbnail size: lines and grain are measured in pixels
   uniforms.uLineW.value = Math.max(0.35, (uniforms.uLineW.value * h) / prevRes.y);
   uniforms.uGrain.value = 0;
-  renderer.setRenderTarget(tinyRT[0]);
-  if (params.look === 5) {
-    pointsMat.uniforms.uPx.value = Math.max(1, (pxBefore * h) / prevRes.y);
-    renderer.render(seaScene, camera);
-    pointsMat.uniforms.uPx.value = pxBefore;
-  } else renderer.render(scene, camera);
+  pointsMat.uniforms.uPx.value = Math.max(1, (pxBefore * h) / prevRes.y);
+  drawArtwork(tinyRT[0], false);
+  pointsMat.uniforms.uPx.value = pxBefore;
   renderer.setRenderTarget(null);
   uniforms.uRes.value.copy(prevRes);
   uniforms.uMaskOn.value = maskOn;
@@ -1376,10 +1389,14 @@ rotHandle.addEventListener('pointerdown', (e) => beginRotate(e));
 selBox.appendChild(rotHandle);
 document.body.appendChild(selBox);
 
+type Rect = { x0: number; y0: number; x1: number; y1: number };
 type Drag =
   | { kind: 'move'; idx: number; sx: number; sy: number; px: number; py: number }
   | { kind: 'scale'; idx: number; cx: number; cy: number; d0: number; size0: number }
-  | { kind: 'rotate'; idx: number; cx: number; cy: number; a0: number; rot0: number };
+  | { kind: 'rotate'; idx: number; cx: number; cy: number; a0: number; rot0: number }
+  | { kind: 'lmove'; idx: number; sx: number; sy: number; r0: Rect }
+  | { kind: 'lresize'; idx: number; corner: string; r0: Rect }
+  | { kind: 'marquee'; sx: number; sy: number };
 let drag: Drag | null = null;
 const SEL_PAD = 8;
 
@@ -1439,11 +1456,215 @@ function beginScale(e: PointerEvent): void {
   };
 }
 
+// ---- base layers: draw a rectangle, then select / move / resize it
+const MIN_LAYER = 0.03; // smallest side, as a share of the canvas
+const marquee = document.createElement('div');
+marquee.id = 'marquee';
+const marqueeLabel = document.createElement('span');
+marquee.appendChild(marqueeLabel);
+document.body.appendChild(marquee);
+const layerBox = document.createElement('div');
+layerBox.id = 'layerbox';
+for (const corner of ['nw', 'ne', 'sw', 'se']) {
+  const h = document.createElement('div');
+  h.className = `handle ${corner}`;
+  h.addEventListener('pointerdown', (e) => {
+    if (selectedLayer < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const l = params.layers[selectedLayer];
+    drag = { kind: 'lresize', idx: selectedLayer, corner, r0: { x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 } };
+  });
+  layerBox.appendChild(h);
+}
+document.body.appendChild(layerBox);
+
+/** Topmost base layer under a point, or -1. */
+function hitLayer(x: number, y: number): number {
+  const u = x / window.innerWidth;
+  const v = y / window.innerHeight;
+  const order = layerOrder(params.layers);
+  for (let n = order.length - 1; n >= 0; n--) {
+    const l = params.layers[order[n]];
+    if (u >= l.x0 && u <= l.x1 && v >= l.y0 && v <= l.y1) return order[n];
+  }
+  return -1;
+}
+
+function dragRect(sx: number, sy: number, x: number, y: number): Rect {
+  const cl = (v: number) => Math.min(Math.max(v, 0), 1);
+  const ax = cl(sx / window.innerWidth);
+  const ay = cl(sy / window.innerHeight);
+  const bx = cl(x / window.innerWidth);
+  const by = cl(y / window.innerHeight);
+  return { x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) };
+}
+
+function updateMarquee(x: number, y: number): void {
+  if (drag?.kind !== 'marquee') return;
+  const r = dragRect(drag.sx, drag.sy, x, y);
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  marquee.style.display = 'block';
+  marquee.style.left = `${r.x0 * W}px`;
+  marquee.style.top = `${r.y0 * H}px`;
+  marquee.style.width = `${(r.x1 - r.x0) * W}px`;
+  marquee.style.height = `${(r.y1 - r.y0) * H}px`;
+  marqueeLabel.textContent = `${Math.round((r.x1 - r.x0) * W)} × ${Math.round((r.y1 - r.y0) * H)}`;
+}
+
+function finishMarquee(d: { sx: number; sy: number }, x: number, y: number): void {
+  marquee.style.display = 'none';
+  const r = dragRect(d.sx, d.sy, x, y);
+  if (r.x1 - r.x0 < MIN_LAYER || r.y1 - r.y0 < MIN_LAYER) return; // a click, not a drag: stay armed
+  createLayer(armedLook, r);
+}
+
+function createLayer(look: number, r: Rect): void {
+  if (params.layers.length >= MAX_LAYERS) {
+    toast(`Up to ${MAX_LAYERS} base layers`);
+    return;
+  }
+  if (look === SEA && seaLayer()) {
+    toast('Only one particle sea at a time');
+    armedLook = -1;
+    return;
+  }
+  const [a, b, c, d] = lookDefaults[look];
+  const z = Math.max(-1, ...params.layers.map((l, i) => l.z ?? i)) + 1;
+  params.layers.push({ look, a, b, c, d, ...r, size: 'free', z });
+  if (look === SEA) for (const g of params.glyphs) if (g.opacity < 0.3) g.opacity = 0.9; // the sea draws the letters through their fill
+  selectedLayer = params.layers.length - 1;
+  selectedIdx = -1;
+  armedLook = -1;
+  refreshGui();
+}
+
+function dragLayer(d: Drag & { kind: 'lmove' | 'lresize' }, e: PointerEvent): void {
+  const l = params.layers[d.idx];
+  if (!l) return;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const r = d.r0;
+  if (d.kind === 'lmove') {
+    const w = r.x1 - r.x0;
+    const h = r.y1 - r.y0;
+    const dx = Math.min(Math.max((e.clientX - d.sx) / W, -r.x0), 1 - r.x1);
+    const dy = Math.min(Math.max((e.clientY - d.sy) / H, -r.y0), 1 - r.y1);
+    l.x0 = r.x0 + dx;
+    l.y0 = r.y0 + dy;
+    l.x1 = l.x0 + w;
+    l.y1 = l.y0 + h;
+  } else {
+    const u = Math.min(Math.max(e.clientX / W, 0), 1);
+    const v = Math.min(Math.max(e.clientY / H, 0), 1);
+    if (d.corner.includes('w')) l.x0 = Math.min(u, r.x1 - MIN_LAYER);
+    else l.x1 = Math.max(u, r.x0 + MIN_LAYER);
+    if (d.corner.includes('n')) l.y0 = Math.min(v, r.y1 - MIN_LAYER);
+    else l.y1 = Math.max(v, r.y0 + MIN_LAYER);
+    l.size = 'free';
+  }
+}
+
+function moveBaseLayer(to: 'back' | 'down' | 'up' | 'front'): void {
+  if (!params.layers[selectedLayer]) return;
+  const order = layerOrder(params.layers);
+  const pos = order.indexOf(selectedLayer);
+  const dst = to === 'back' ? 0 : to === 'front' ? order.length - 1 : Math.min(Math.max(pos + (to === 'up' ? 1 : -1), 0), order.length - 1);
+  order.splice(pos, 1);
+  order.splice(dst, 0, selectedLayer);
+  order.forEach((li, r) => { params.layers[li].z = r; });
+}
+
+function removeBaseLayer(): void {
+  if (!params.layers[selectedLayer]) return;
+  params.layers.splice(selectedLayer, 1);
+  selectedLayer = -1;
+  refreshGui();
+}
+
+window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement;
+  if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
+  if (e.key === 'Escape' && armedLook >= 0) {
+    armedLook = -1;
+    marquee.style.display = 'none';
+    drag = null;
+    return;
+  }
+  const l = selectedIdx < 0 ? params.layers[selectedLayer] : undefined;
+  if (!l) return;
+  const step = e.shiftKey ? 0.02 : 0.004;
+  const moves: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (e.key === 'Escape') selectedLayer = -1;
+  else if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    removeBaseLayer();
+  } else if (moves[e.key]) {
+    e.preventDefault();
+    const dx = Math.min(Math.max(moves[e.key][0], -l.x0), 1 - l.x1);
+    const dy = Math.min(Math.max(moves[e.key][1], -l.y0), 1 - l.y1);
+    l.x0 += dx; l.x1 += dx; l.y0 += dy; l.y1 += dy;
+  }
+});
+
+const layerBar = new LayerBar({
+  state: () => {
+    const order = layerOrder(params.layers);
+    const l = params.layers[selectedLayer];
+    const pal = palettes[params.palette];
+    return {
+      order: order.map((index) => ({ index, look: params.layers[index].look })),
+      selected: selectedLayer,
+      armed: armedLook,
+      sel: l ? { look: l.look, vals: [l.a, l.b, l.c, l.d], size: l.size, pos: order.indexOf(selectedLayer), count: order.length } : null,
+      bg: params.bg,
+      paper: pal.paper,
+      ink: pal.ink,
+    };
+  },
+  arm: (look) => {
+    armedLook = armedLook === look ? -1 : look;
+    if (armedLook >= 0) selectedIdx = selectedLayer = -1;
+  },
+  select: (i) => {
+    selectedLayer = i;
+    selectedIdx = -1;
+    armedLook = -1;
+  },
+  setValue: (slot, v) => {
+    const l = params.layers[selectedLayer];
+    if (l) l[(['a', 'b', 'c', 'd'] as const)[slot]] = v;
+  },
+  setSize: (id) => {
+    const l = params.layers[selectedLayer];
+    if (!l) return;
+    l.size = id;
+    const r = fitSize(id, window.innerWidth, window.innerHeight);
+    if (r) Object.assign(l, r);
+  },
+  moveLayer: moveBaseLayer,
+  remove: removeBaseLayer,
+  setBg: (patch) => {
+    Object.assign(params.bg, patch);
+  },
+});
+document.body.appendChild(layerBar.root);
+
 canvas.style.touchAction = 'none';
 canvas.addEventListener('pointerdown', (e) => {
   (document.activeElement as HTMLElement | null)?.blur?.();
+  if (armedLook >= 0) {
+    // drawing a new base layer: drag out its rectangle
+    drag = { kind: 'marquee', sx: e.clientX, sy: e.clientY };
+    selectedIdx = selectedLayer = -1;
+    updateMarquee(e.clientX, e.clientY);
+    e.preventDefault();
+    return;
+  }
   const hit = hitGlyph(e.clientX, e.clientY);
   if (hit >= 0) {
+    selectedLayer = -1;
     selectedIdx = hit;
     activeIdx = hit;
     const g = params.glyphs[hit];
@@ -1452,15 +1673,35 @@ canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
   } else {
     selectedIdx = -1;
+    const li = hitLayer(e.clientX, e.clientY);
+    selectedLayer = li;
+    if (li >= 0) {
+      const l = params.layers[li];
+      drag = { kind: 'lmove', idx: li, sx: e.clientX, sy: e.clientY, r0: { x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 } };
+      e.preventDefault();
+    }
   }
 });
 canvas.addEventListener('pointermove', (e) => {
   if (drag) return;
+  if (armedLook >= 0) {
+    canvas.style.cursor = 'crosshair';
+    return;
+  }
   const hit = hitGlyph(e.clientX, e.clientY);
-  canvas.style.cursor = hit < 0 ? 'default' : hit === selectedIdx ? 'move' : 'pointer';
+  if (hit >= 0) canvas.style.cursor = hit === selectedIdx ? 'move' : 'pointer';
+  else canvas.style.cursor = hitLayer(e.clientX, e.clientY) >= 0 ? 'pointer' : 'default';
 });
 window.addEventListener('pointermove', (e) => {
   if (!drag) return;
+  if (drag.kind === 'marquee') {
+    updateMarquee(e.clientX, e.clientY);
+    return;
+  }
+  if (drag.kind === 'lmove' || drag.kind === 'lresize') {
+    dragLayer(drag, e);
+    return;
+  }
   const g = params.glyphs[drag.idx];
   if (!g) return;
   if (drag.kind === 'move') {
@@ -1479,7 +1720,10 @@ window.addEventListener('pointermove', (e) => {
   }
   refreshGui();
 });
-window.addEventListener('pointerup', () => { drag = null; });
+window.addEventListener('pointerup', (e) => {
+  if (drag?.kind === 'marquee') finishMarquee(drag, e.clientX, e.clientY);
+  drag = null;
+});
 canvas.addEventListener(
   'wheel',
   (e) => {
@@ -1572,7 +1816,21 @@ const glyphTools = new GlyphTools({
 });
 document.body.appendChild(glyphTools.root);
 
+function updateLayerUI(): void {
+  const l = params.layers[selectedLayer];
+  layerBox.style.display = l && selectedIdx < 0 ? 'block' : 'none';
+  if (l) {
+    layerBox.style.left = `${l.x0 * window.innerWidth}px`;
+    layerBox.style.top = `${l.y0 * window.innerHeight}px`;
+    layerBox.style.width = `${(l.x1 - l.x0) * window.innerWidth}px`;
+    layerBox.style.height = `${(l.y1 - l.y0) * window.innerHeight}px`;
+  }
+  canvas.style.cursor = armedLook >= 0 ? 'crosshair' : canvas.style.cursor;
+  layerBar.update();
+}
+
 function updateSelectionUI(): void {
+  updateLayerUI();
   const ok = selectedIdx >= 0 && selectedIdx < params.glyphs.length;
   selBox.style.display = ok ? 'block' : 'none';
   if (!ok) {

@@ -26,16 +26,37 @@ export interface GlyphDef {
   warp: number; // noise warp of the letterform
 }
 
+/** A generative base layer, drawn only inside its rectangle (fractions of the canvas, y pointing down). */
+export interface BaseLayer {
+  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 particle sea
+  a: number; // look-specific sliders; their meaning depends on `look`
+  b: number;
+  c: number;
+  d: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  size: string; // size preset id ('free' = drawn by hand)
+  z?: number; // stacking position among base layers (higher = in front); unset follows the list order
+}
+
+/** The canvas behind everything: a solid colour, optionally with a simple pattern on top. */
+export interface Background {
+  type: number; // 0 solid, 1 grid, 2 horizontal lines, 3 vertical lines, 4 dots, 5 diagonal lines
+  color: string; // '' follows the palette's paper colour
+  line: string; // pattern colour; '' follows the palette's ink colour
+  spacing: number; // distance between lines, as a share of the canvas's short side
+  weight: number; // line thickness in px
+  strength: number; // pattern opacity
+}
+
 export interface Params {
   glyphs: GlyphDef[];
   effects: EffectLayer[]; // stacked effect layers, applied in order
   mode: number; // 0 offset lines, 1 mountain, 2 basin
-  // how the landscape is drawn
-  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid, 5 particle sea
-  lookA: number; // look-specific sliders; their meaning depends on `look`
-  lookB: number;
-  lookC: number;
-  lookD: number;
+  layers: BaseLayer[]; // base layers (topography, ridgelines, ...), each drawn only inside its own rectangle
+  bg: Background; // what the canvas looks like outside (and behind) the base layers
   // letter shape shared by all glyphs
   shapeBlend: number; // how much neighbouring letters fuse together
   shapeWarpScale: number;
@@ -81,11 +102,8 @@ export const defaultParams: Params = {
   glyphs: [{ ...defaultGlyph }],
   effects: [],
   mode: 0,
-  look: 0,
-  lookA: 0,
-  lookB: 0,
-  lookC: 0,
-  lookD: 0,
+  layers: [],
+  bg: { type: 0, color: '', line: '', spacing: 0.05, weight: 1, strength: 0.35 },
   shapeBlend: 0,
   shapeWarpScale: 3,
   shapeWarpSpeed: 0.15,
@@ -125,6 +143,11 @@ export const defaultParams: Params = {
 // Presets (and presets saved by older versions) may still describe a single glyph with top-level fields.
 // Older presets also carried shared appearance/shape settings; they are turned into per-glyph values on load.
 interface LegacyShared {
+  look?: number; // older presets had one look covering the whole canvas
+  lookA?: number;
+  lookB?: number;
+  lookC?: number;
+  lookD?: number;
   fill?: number;
   fillAuto?: boolean;
   fillColor?: string;
@@ -132,11 +155,13 @@ interface LegacyShared {
   shapeGrow?: number;
   shapeWarp?: number;
 }
-export type PresetData = Omit<Partial<Params>, 'glyphs'> &
+export type PresetData = Omit<Partial<Params>, 'glyphs' | 'bg'> & { bg?: Partial<Background> } &
   Partial<GlyphDef> &
   LegacyShared & { glyphs?: Partial<GlyphDef>[] };
 
 export const presets: Record<string, PresetData> = {
+  // an empty canvas with a single letter: add base layers from the bar at the top
+  'Blank space': { layers: [], glyphs: [{ text: 'A', font: 'Playfair Display', size: 1.1, opacity: 1 }], animate: true, details: false },
   Default: {},
   hubworks: {
     "glyphs": [
@@ -358,7 +383,7 @@ export function storeUserPresets(all: Record<string, PresetData>): boolean {
 
 /** Turns preset data (current or legacy single-glyph format) into a complete, independent Params object. */
 export function resolvePreset(data: PresetData): Params {
-  const { text, font, size, posX, posY, glyphs, fill, fillAuto, fillColor, shapeSoft, shapeGrow, shapeWarp, ...rest } = data;
+  const { text, font, size, posX, posY, glyphs, fill, fillAuto, fillColor, shapeSoft, shapeGrow, shapeWarp, look, lookA, lookB, lookC, lookD, bg, ...rest } = data;
   const legacy: Partial<GlyphDef> = {};
   if (text !== undefined) legacy.text = text;
   if (font !== undefined) legacy.font = font;
@@ -374,9 +399,39 @@ export function resolvePreset(data: PresetData): Params {
     grow: shapeGrow ?? 0,
     warp: shapeWarp ?? 0,
   };
+  // older presets drew one look over the whole canvas: that becomes a full-canvas base layer
+  const layers: BaseLayer[] = rest.layers
+    ? structuredClone(rest.layers).map((l) => ({ ...fullLayer(l.look ?? 0), ...l }))
+    : [{ ...fullLayer(look ?? 0), ...legacyLook(lookA, lookB, lookC, lookD) }];
   return {
     ...structuredClone(defaultParams),
     ...structuredClone(rest),
+    layers,
+    bg: { ...defaultParams.bg, ...bg },
     glyphs: structuredClone(list).map((g) => ({ ...defaultGlyph, ...shared, ...g })),
   };
+}
+
+/** Slider values each look starts with. */
+export const lookDefaults: Record<number, [number, number, number, number]> = {
+  0: [0, 0, 0, 0],
+  1: [64, 1.8, 0.8, 0],
+  2: [0.5, 0, 0, 0],
+  3: [22, 1.8, 1.5, 0],
+  4: [28, 6, 0, 0],
+  5: [170, 0.55, 0.6, 0.55],
+};
+
+export function fullLayer(look: number): BaseLayer {
+  const [a, b, c, d] = lookDefaults[look] ?? lookDefaults[0];
+  return { look, a, b, c, d, x0: 0, y0: 0, x1: 1, y1: 1, size: 'full' };
+}
+
+function legacyLook(a?: number, b?: number, c?: number, d?: number): Partial<BaseLayer> {
+  const out: Partial<BaseLayer> = {};
+  if (a !== undefined) out.a = a;
+  if (b !== undefined) out.b = b;
+  if (c !== undefined) out.c = c;
+  if (d !== undefined) out.d = d;
+  return out;
 }
