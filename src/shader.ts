@@ -208,7 +208,7 @@ uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
 uniform float uMarks;      // 1 = output only the marks (lines, bands, grout), with transparency elsewhere
 float gMark = 1.0;         // coverage of the marks, written by each look
-uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 mosaic, 4 warped grid (5 = particle sea, drawn by its own passes)
+uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 halftone, 4 warped grid (5 = particle sea, drawn by its own passes)
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
@@ -342,38 +342,26 @@ vec3 lookBands(float H) {
   return mix(light, uInk, m);
 }
 
-// ---- look 3: mosaic. Voronoi tiles coloured by the height at their centre; denser near the letters.
-vec3 lookMosaic(vec2 q, float d) {
-  float w = 1.0 - smoothstep(0.0, uInfluence, max(d, 0.0));
-  float dens = uLookA * (1.0 + uLookB * w);
-  vec2 p = q * dens;
-  vec2 ip = floor(p);
-  vec2 fp = fract(p);
-  float F1 = 8.0;
-  float F2 = 8.0;
-  vec2 cell = vec2(0.0);
-  for (int j = -1; j <= 1; j++) {
-    for (int i = -1; i <= 1; i++) {
-      vec2 g = vec2(float(i), float(j));
-      vec2 o = hash22(ip + g + uSeed);
-      o = 0.5 + 0.5 * sin(6.2831853 * o + uTime * 0.3);
-      vec2 r = g + o - fp;
-      float dd = dot(r, r);
-      if (dd < F1) { F2 = F1; F1 = dd; cell = ip + g + o; }
-      else if (dd < F2) { F2 = dd; }
-    }
-  }
+// ---- look 3: halftone. A rotated dot screen; every dot grows with the terrain height at its centre (and with the letters).
+vec3 lookHalftone(vec2 q) {
+  float ang = radians(uLookC);
+  mat2 R = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
+  float cells = max(uLookA, 4.0);
+  vec2 p = (R * q) * cells;
+  vec2 fp = fract(p) - 0.5;
+  vec2 cq = transpose(R) * ((floor(p) + 0.5) / cells); // the cell's centre, back in terrain space
   float dc;
-  float Hc = fieldAt(cell / dens, dc);
-  float tone = clamp(toneOf(Hc) + (hash(cell) - 0.5) * 0.4, 0.0, 1.0);
-  vec3 col = mix(uPaper, ramp(tone), 0.35 + 0.65 * uTint);
-  col = mix(col, uIndex, smoothstep(0.45, 1.0, tone) * 0.75); // tall tiles lean towards the accent colour
-  float edge = sqrt(F2) - sqrt(F1);
-  float wc = 0.04 * uLookC * max(uLineW, 0.3);
-  float aa = max(fwidth(edge), 1e-4);
-  float grout = 1.0 - smoothstep(wc * 0.5 - aa, wc * 0.5 + aa, edge);
-  gMark = grout * 0.9;
-  return mix(col, uInk, grout * 0.9);
+  float t0 = toneOf(fieldAt(cq, dc));
+  float near = 1.0 - smoothstep(0.0, uInfluence, max(dc, 0.0));
+  float tone = clamp((t0 - 0.5) * 1.9 + 0.5 + near * 0.3, 0.0, 1.0); // more contrast, and the dots swell around the letters
+  float r = 0.5 * uLookB * sqrt(tone);
+  float dist = mix(length(fp), max(abs(fp.x), abs(fp.y)), uLookD); // round dots .. square pixels
+  float aa = max(fwidth(dist), 1e-4);
+  float cov = 1.0 - smoothstep(r - aa, r + aa, dist);
+  vec3 paper = mix(uPaper, ramp(tone), uTint * 0.6);
+  vec3 ink = mix(uInk, uIndex, smoothstep(0.45, 1.0, tone));
+  gMark = cov;
+  return mix(paper, ink, cov);
 }
 
 // ---- look 4: warped grid. A layout grid bent like a lens around the letters (with a hint of terrain).
@@ -418,7 +406,7 @@ void main() {
   vec3 col;
   if (uLook == 1) col = lookRidge(gl_FragCoord.xy);
   else if (uLook == 2) col = lookBands(H);
-  else if (uLook == 3) col = lookMosaic(q, d);
+  else if (uLook == 3) col = lookHalftone(q);
   else if (uLook == 4) col = lookGrid(q, H);
   else col = lookTopo(d, H);
 

@@ -5,7 +5,7 @@ import type { BaseLayer } from './presets';
 
 export const MAX_LAYERS = 8;
 
-export const lookNames = ['Topographic', 'Ridgeline', 'Op-art bands', 'Mosaic', 'Warped grid', 'Particle sea'];
+export const lookNames = ['Topographic', 'Ridgeline', 'Op-art bands', 'Halftone', 'Warped grid', 'Particle sea'];
 export const SEA = 5;
 export const TOPO = 0;
 
@@ -20,10 +20,10 @@ export const lookSliders: Record<number, (LookSlider | null)[]> = {
   ],
   2: [{ label: 'Thickness', min: 0.1, max: 0.9, step: 0.01 }, null, null, null],
   3: [
-    { label: 'Tiles', min: 6, max: 80, step: 0.5 },
-    { label: 'Density', min: 0, max: 5, step: 0.05 },
-    { label: 'Grout', min: 0.2, max: 4, step: 0.05 },
-    null,
+    { label: 'Dots', min: 16, max: 160, step: 1 },
+    { label: 'Dot size', min: 0.2, max: 1.4, step: 0.01 },
+    { label: 'Angle', min: 0, max: 90, step: 1 },
+    { label: 'Round ↔ square', min: 0, max: 1, step: 0.01 },
   ],
   4: [
     { label: 'Cells', min: 6, max: 90, step: 0.5 },
@@ -84,7 +84,7 @@ export const styleSliders: StyleSlider[] = [
   { key: 'drift', label: 'Evolution', min: 0, max: 0.3, step: 0.001, looks: null },
   { key: 'seed', label: 'Seed', min: 0, max: 10, step: 0.001, looks: null },
   { key: 'spacing', label: 'Interval', min: 0.004, max: 0.06, step: 0.001, looks: [0, 2] },
-  { key: 'lineWidth', label: 'Line weight', min: 0.3, max: 4, step: 0.05, looks: [0, 1, 3, 4, 5] },
+  { key: 'lineWidth', label: 'Line weight', min: 0.3, max: 4, step: 0.05, looks: [0, 1, 4, 5] },
   { key: 'tint', label: 'Tint', min: 0, max: 1, step: 0.01, looks: [0, 2, 3, 4] },
   { key: 'shade', label: 'Hillshade', min: 0, max: 1, step: 0.01, looks: [0] },
 ];
