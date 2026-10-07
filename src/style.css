@@ -337,3 +337,31 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 #layer-tools .gt-save { grid-template-columns: 1fr auto auto; margin-top: 6px; }
 #layer-tools .gt-text { font: inherit; color: var(--ui-text); background: var(--ui-bg-3); border: 1px solid var(--ui-line); border-radius: 6px; padding: 4px 8px; min-width: 0; }
 #layer-tools .gt-text::placeholder { color: var(--ui-dim); }
+
+/* glyph panel: text / shape / transform sections */
+#glyph-tools { max-height: calc(100vh - 16px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ui-bg-4) transparent; }
+#glyph-tools .gt-sec { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ui-line); }
+#glyph-tools .gt-sec[hidden] { display: none; }
+#glyph-tools .gt-sec-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; font: 600 10px var(--ui-font); letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ui-dim); background: none; border: 0; cursor: pointer; text-align: left;
+}
+#glyph-tools .gt-sec-head::before { content: '▾'; font-size: 11px; }
+#glyph-tools .gt-sec.closed .gt-sec-head::before { content: '▸'; }
+#glyph-tools .gt-sec-head:hover { color: var(--ui-text); }
+#glyph-tools .gt-sec.closed .gt-sec-body { display: none; }
+#glyph-tools .gt-text, #glyph-tools .gt-select {
+  font: inherit; color: var(--ui-text); background: var(--ui-bg-3); border: 1px solid var(--ui-line); border-radius: 6px;
+  padding: 4px 8px; min-width: 0; width: 100%; box-sizing: border-box;
+}
+#glyph-tools .gt-text::placeholder { color: var(--ui-dim); }
+#glyph-tools .gt-ghost, #glyph-tools .gt-danger {
+  width: 100%; margin-top: 10px; font: 500 12px var(--ui-font); color: var(--ui-dim); background: var(--ui-bg-3); border: 0;
+  border-radius: 7px; padding: 6px 0; cursor: pointer;
+}
+#glyph-tools .gt-ghost:hover { color: var(--ui-text); background: var(--ui-bg-4); }
+#glyph-tools .gt-danger { color: #e88; }
+#glyph-tools .gt-danger:hover { background: #7a2b33; color: #fff; }
+#glyph-tools .gt-ghost[hidden], #glyph-tools .gt-danger[hidden] { display: none; }
+#glyph-tools .gt-sec-body .gt-row:first-child { margin-top: 8px; }
+#glyph-tools { width: 252px; }

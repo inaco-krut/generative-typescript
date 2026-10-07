@@ -890,34 +890,6 @@ gPresets.add(presetActions, 'remove').name('Delete selected preset');
 
 // The panel edits one glyph at a time (the active one); these accessors forward to it.
 const activeGlyph = () => params.glyphs[activeIdx] ?? params.glyphs[0];
-const active = {
-  get text() { return activeGlyph().text; },
-  set text(v: string) { activeGlyph().text = v; },
-  get font() { return activeGlyph().font; },
-  set font(v: string) { activeGlyph().font = v; },
-  get size() { return activeGlyph().size; },
-  set size(v: number) { activeGlyph().size = v; },
-  get posX() { return activeGlyph().posX; },
-  set posX(v: number) { activeGlyph().posX = v; },
-  get posY() { return activeGlyph().posY; },
-  set posY(v: number) { activeGlyph().posY = v; },
-  get rot() { return activeGlyph().rot; },
-  set rot(v: number) { activeGlyph().rot = v; },
-  get skew() { return activeGlyph().skew; },
-  set skew(v: number) { activeGlyph().skew = v; },
-  get stretch() { return activeGlyph().stretch; },
-  set stretch(v: number) { activeGlyph().stretch = v; },
-  get text2() { return activeGlyph().text2; },
-  set text2(v: string) { activeGlyph().text2 = v; },
-  get morph() { return activeGlyph().morph; },
-  set morph(v: number) { activeGlyph().morph = v; },
-  get grow() { return activeGlyph().grow; },
-  set grow(v: number) { activeGlyph().grow = v; },
-  get soft() { return activeGlyph().soft; },
-  set soft(v: number) { activeGlyph().soft = v; },
-  get warp() { return activeGlyph().warp; },
-  set warp(v: number) { activeGlyph().warp = v; },
-};
 
 const glyphLabel = (i: number) => {
   const g = params.glyphs[i];
@@ -1007,41 +979,8 @@ const glyphPickCtl = showWhen(
     }),
   () => params.glyphs.length > 1,
 );
-const isImage = () => !!activeGlyph().image;
-showWhen(
-  tip(
-    gGlyph
-      .add(active, 'text')
-      .name('Text')
-      .onFinishChange(() => {
-        void loadGlyph(activeIdx, true);
-        refreshGlyphPicker();
-      }),
-    'Type here, or just type anywhere on the canvas',
-  ),
-  () => !isImage(),
-);
-const fontCtl = showWhen(
-  gGlyph.add(active, 'font', fonts.map((f) => f.family)).name('Font').onChange(() => void loadGlyph(activeIdx, true)),
-  () => !isImage(),
-);
-tip(gGlyph.add(active, 'size', 0.2, 4, 0.01).name('Size'), 'Or drag a corner handle / scroll on the selected glyph');
-gGlyph.add(active, 'rot', -180, 180, 0.5).name('Rotation');
-
-const gShape2 = gGlyph.addFolder('Shape').close(); // weight, softness and warp: not in the floating panel
-gShape2.add(active, 'grow', -0.05, 0.08, 0.001).name('Weight');
-gShape2.add(active, 'soft', 0, 1, 0.005).name('Soften corners');
-gShape2.add(active, 'warp', 0, 1, 0.005).name('Warp');
 gGlyph.add(glyphActions, 'add').name('+ Add text glyph');
 tip(gGlyph.add(glyphActions, 'addImage').name('+ Add image…'), 'A PNG with a transparent background; its silhouette becomes a glyph. You can also drop a file on the canvas');
-showWhen(gGlyph.add(glyphActions, 'useText').name('Switch back to text'), isImage);
-showWhen(gGlyph.add(glyphActions, 'remove').name('− Delete this glyph'), () => params.glyphs.length > 1);
-const gXf = gGlyph.addFolder('Skew, stretch & morph').close();
-gXf.add(active, 'skew', -0.8, 0.8, 0.005).name('Skew');
-gXf.add(active, 'stretch', 0.3, 3, 0.01).name('Stretch');
-showWhen(tip(gXf.add(active, 'text2').name('Morph to').onFinishChange(() => void loadGlyph(activeIdx, false)), 'A second text to blend towards'), () => !isImage());
-showWhen(gXf.add(active, 'morph', 0, 1, 0.001).name('Morph amount'), () => !isImage());
-gXf.add(glyphActions, 'reset').name('Reset transform');
 showWhen(
   tip(gGlyph.add(params, 'shapeBlend', 0, 1, 0.005).name('Blend glyphs'), 'Fuses neighbouring glyphs into one shape (shared by all)'),
   () => params.glyphs.length > 1,
@@ -1187,7 +1126,6 @@ fileInput.addEventListener('change', async () => {
   if (!file) return;
   const def = await loadFontFile(file, fonts.length);
   fonts.push(def);
-  fontCtl.options(fonts.map((f) => f.family));
   activeGlyph().font = def.family;
   refreshGui();
   fileInput.value = '';
@@ -1893,6 +1831,9 @@ const glyphTools = new GlyphTools({
       image: !!g.image,
       imageColor: g.imageColor,
       layer: stackOrder().indexOf(selectedIdx), layers: stackOrder().length,
+      rawText: g.text, text2: g.text2 ?? '', font: g.font, fonts: fonts.map((f) => f.family),
+      rot: g.rot, skew: g.skew, stretch: g.stretch, grow: g.grow, soft: g.soft, warp: g.warp, morph: g.morph,
+      count: params.glyphs.length,
     };
   },
   moveLayer,
@@ -1935,6 +1876,44 @@ const glyphTools = new GlyphTools({
     if (!g) return;
     g.outlineW = w;
     refreshGui();
+  },
+  setText: (v) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g || g.image) return;
+    g.text = v;
+    activeIdx = selectedIdx;
+    void loadGlyph(selectedIdx, true);
+    refreshGlyphPicker();
+  },
+  setText2: (v) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.text2 = v;
+    activeIdx = selectedIdx;
+    void loadGlyph(selectedIdx, false);
+  },
+  setFont: (v) => {
+    const g = params.glyphs[selectedIdx];
+    if (!g) return;
+    g.font = v;
+    void loadGlyph(selectedIdx, true);
+  },
+  setNum: (key, v) => {
+    const g = params.glyphs[selectedIdx];
+    if (g) g[key] = v;
+    refreshGui();
+  },
+  resetTransform: () => {
+    activeIdx = selectedIdx;
+    glyphActions.reset();
+  },
+  useText: () => {
+    activeIdx = selectedIdx;
+    glyphActions.useText();
+  },
+  remove: () => {
+    activeIdx = selectedIdx;
+    glyphActions.remove();
   },
 });
 document.body.appendChild(glyphTools.root);
