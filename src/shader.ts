@@ -208,7 +208,7 @@ uniform float uMaskOn;
 uniform float uOutputH;    // 1 = write the raw height field (for CPU contour tracing)
 uniform float uMarks;      // 1 = output only the marks (lines, bands, grout), with transparency elsewhere
 float gMark = 1.0;         // coverage of the marks, written by each look
-uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 halftone, 4 warped grid (5 = particle sea, drawn by its own passes)
+uniform int uLook;         // 0 topographic, 1 ridgeline, 2 op-art bands, 3 dungeon, 4 warped grid (5 = particle sea, drawn by its own passes)
 uniform float uLookA;      // look-specific sliders (see lookDefs in main.ts)
 uniform float uLookB;
 uniform float uLookC;
@@ -342,26 +342,67 @@ vec3 lookBands(float H) {
   return mix(light, uInk, m);
 }
 
-// ---- look 3: halftone. A rotated dot screen; every dot grows with the terrain height at its centre (and with the letters).
-vec3 lookHalftone(vec2 q) {
-  float ang = radians(uLookC);
-  mat2 R = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
-  float cells = max(uLookA, 4.0);
-  vec2 p = (R * q) * cells;
-  vec2 fp = fract(p) - 0.5;
-  vec2 cq = transpose(R) * ((floor(p) + 0.5) / cells); // the cell's centre, back in terrain space
-  float dc;
-  float t0 = toneOf(fieldAt(cq, dc));
-  float near = 1.0 - smoothstep(0.0, uInfluence, max(dc, 0.0));
-  float tone = clamp((t0 - 0.5) * 1.9 + 0.5 + near * 0.3, 0.0, 1.0); // more contrast, and the dots swell around the letters
-  float r = 0.5 * uLookB * sqrt(tone);
-  float dist = mix(length(fp), max(abs(fp.x), abs(fp.y)), uLookD); // round dots .. square pixels
-  float aa = max(fwidth(dist), 1e-4);
-  float cov = 1.0 - smoothstep(r - aa, r + aa, dist);
-  vec3 paper = mix(uPaper, ramp(tone), uTint * 0.6);
-  vec3 ink = mix(uInk, uIndex, smoothstep(0.45, 1.0, tone));
-  gMark = cov;
-  return mix(paper, ink, cov);
+// ---- look 3: dungeon. Cracked flagstone wall in the dark, lit by torchlight from the letters: molten seams, grit, grain.
+vec3 lookDungeon(vec2 q) {
+  float dg;
+  float H = fieldAt(q, dg);                                    // terrain, reshaped around the letters (dg = distance to them)
+  float scale = max(uLookA, 2.0);
+  float t = uTime;
+
+  // flagstones: wobbled Voronoi cells, the gaps between them are the cracks
+  vec2 wob = vec2(fbm(vec3(q * 2.6, uSeed)), fbm(vec3(q * 2.6 + 7.3, uSeed))) - 0.5;
+  vec2 p = q * scale + wob * 1.3;
+  vec2 ip = floor(p);
+  vec2 fp = fract(p);
+  float F1 = 8.0;
+  float F2 = 8.0;
+  vec2 cid = vec2(0.0);
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 o = hash22(ip + g + uSeed * 13.0);
+      vec2 r = g + o - fp;
+      float dd = dot(r, r);
+      if (dd < F1) { F2 = F1; F1 = dd; cid = ip + g; }
+      else if (dd < F2) { F2 = dd; }
+    }
+  }
+  float edge = sqrt(F2) - sqrt(F1);                            // 0 along the cracks
+  float crack = 1.0 - smoothstep(0.015, 0.1 + 0.05 * hash(cid), edge);
+  float dome = smoothstep(0.0, 0.4, edge);                     // every stone is slightly domed
+  float tone = hash(cid + 3.1);
+
+  // relief: domes, pitting and noise, plus the terrain so the letters push up out of the wall
+  float pit = fbm(vec3(q * 70.0, uSeed + 2.0)) * 0.6 + snoise(vec3(q * 240.0, uSeed)) * 0.4;
+  float hgt = dome * 0.6 + pit * (0.1 + 0.12 * uLookB) + H * uLookD * 0.7;
+  vec2 gr = vec2(dFdx(hgt), dFdy(hgt)) * uRes.y * 0.35 * (0.4 + uLookD);
+  vec3 n = normalize(vec3(-gr, 1.0));
+
+  // torchlight: a flickering warm pool around the letters, plus a faint cold fill
+  float flick = 0.8 + 0.2 * snoise(vec3(q * 2.5, t * 2.6)) + 0.06 * sin(t * 17.0 + q.x * 4.0);
+  float torch = exp(-max(dg, 0.0) * 8.0) * uLookC * flick;
+  vec3 L = normalize(vec3(-0.45 + 0.1 * sin(t * 1.3), 0.55, 0.6));
+  float diff = max(dot(n, L), 0.0);
+  vec3 glowCol = mix(vec3(1.0, 0.46, 0.12), uIndex, 0.2);
+
+  // the stone itself: near-black, each block a different grey, palette bleeds in through tint
+  vec3 stone = mix(vec3(0.08, 0.075, 0.072), vec3(0.3, 0.28, 0.26), tone);
+  stone = mix(stone, stone * (0.5 + 1.5 * uMid), uTint * 0.55);
+  stone *= 0.5 + 1.0 * fbm(vec3(q * 5.0, uSeed + 5.0));        // stains and damp patches
+  vec3 col = stone * (vec3(0.2, 0.22, 0.27) + 1.1 * diff * (0.45 + torch * 1.6) + torch * 1.4 * glowCol); // cold fill, warm torch
+  col *= 1.0 - crack * 0.85;                                   // the gaps swallow the light
+
+  // molten seams: the cracks near the letters glow
+  float lava = crack * pow(clamp(torch, 0.0, 2.0), 0.75) * (0.7 + 0.3 * snoise(vec3(p * 1.5, t * 1.5)));
+  col += glowCol * lava * 2.2;
+
+  // grit: animated film grain, mottling and dust specks
+  float gh = hash(gl_FragCoord.xy + fract(t * 9.0) * 61.0);
+  col *= 1.0 + (gh - 0.5) * uLookB * 0.8;
+  float dust = step(0.9975, hash(gl_FragCoord.xy * 1.37 + 5.0)) * (0.15 + 0.6 * hash(gl_FragCoord.xy));
+  col += vec3(0.8, 0.75, 0.7) * dust * uLookB * 0.35 * (0.3 + torch);
+  gMark = clamp(crack * 0.95 + lava * 0.5 + dust * uLookB * 0.3, 0.0, 1.0);
+  return max(col, 0.0);
 }
 
 // ---- look 4: warped grid. A layout grid bent like a lens around the letters (with a hint of terrain).
@@ -406,7 +447,7 @@ void main() {
   vec3 col;
   if (uLook == 1) col = lookRidge(gl_FragCoord.xy);
   else if (uLook == 2) col = lookBands(H);
-  else if (uLook == 3) col = lookHalftone(q);
+  else if (uLook == 3) col = lookDungeon(q);
   else if (uLook == 4) col = lookGrid(q, H);
   else col = lookTopo(d, H);
 

@@ -28,7 +28,7 @@ export interface GlyphDef {
 
 /** A generative base layer, drawn only inside its rectangle (fractions of the canvas, y pointing down). */
 export interface BaseLayer {
-  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 halftone, 4 warped grid, 5 particle sea
+  look: number; // 0 topographic, 1 ridgeline, 2 op-art bands, 3 dungeon, 4 warped grid, 5 particle sea
   a: number; // look-specific sliders; their meaning depends on `look`
   b: number;
   c: number;
@@ -320,6 +320,11 @@ export const presets: Record<string, PresetData> = {
     look: 2, lookA: 0.5, mode: 0, palette: 'Ink', fill: 1, spacing: 0.03, tint: 0, rough: 0.5, freq: 2.2, warp: 0.6, influence: 0.7, slope: 1, wobble: 0.25,
     grain: 0.02, animate: false, details: false,
   },
+  'Look: Dungeon': {
+    glyphs: [{ text: 'Crypt', font: 'Archivo Black', size: 1.25, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
+    look: 3, lookA: 8, lookB: 1.2, lookC: 1.4, lookD: 1, mode: 1, palette: 'Midnight', fill: 1, fillAuto: false, fillColor: '#d4c8b0',
+    rough: 0.4, freq: 2, warp: 0.5, influence: 0.45, slope: 0.5, wobble: 0.2, grain: 0.05, animate: true, details: false,
+  },
   'Look: Warped grid': {
     glyphs: [{ text: 'Hub', font: 'Space Grotesk', size: 1.3, posX: 0, posY: 0, rot: 0, skew: 0, stretch: 1, text2: '', morph: 0 }],
     look: 4, lookA: 28, lookB: 6, mode: 1, palette: 'Blueprint', fill: 0.9, fillAuto: true,
@@ -415,7 +420,7 @@ export function resolvePreset(data: PresetData): Params {
   const merged = { ...structuredClone(defaultParams), ...structuredClone(rest) };
   const style = layerStyle(merged); // layers without their own settings inherit the preset's shared ones
   const layers: BaseLayer[] = rest.layers
-    ? structuredClone(rest.layers).map((l) => ({ ...fullLayer(l.look ?? 0, style), ...l, ...(l.look === 3 && l.b > 1.4 ? { a: 64, b: 1, c: 45, d: 0 } : {}) })) // the old mosaic's settings do not fit the halftone
+    ? structuredClone(rest.layers).map((l) => ({ ...fullLayer(l.look ?? 0, style), ...l, ...(l.look === 3 && (l.a > 30 || l.b > 2) ? { a: 8, b: 1, c: 1, d: 1 } : {}) })) // settings of the looks this slot used to hold do not fit the dungeon
     : [{ ...fullLayer(look ?? 0, style), ...legacyLook(lookA, lookB, lookC, lookD) }];
   return {
     ...merged,
@@ -430,7 +435,7 @@ export const lookDefaults: Record<number, [number, number, number, number]> = {
   0: [0, 0, 0, 0],
   1: [64, 1.8, 0.8, 0],
   2: [0.5, 0, 0, 0],
-  3: [64, 1, 45, 0],
+  3: [8, 1, 1, 1],
   4: [28, 6, 0, 0],
   5: [170, 0.55, 0.6, 0.55],
 };

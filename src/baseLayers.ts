@@ -5,7 +5,7 @@ import type { BaseLayer } from './presets';
 
 export const MAX_LAYERS = 8;
 
-export const lookNames = ['Topographic', 'Ridgeline', 'Op-art bands', 'Halftone', 'Warped grid', 'Particle sea'];
+export const lookNames = ['Topographic', 'Ridgeline', 'Op-art bands', 'Dungeon', 'Warped grid', 'Particle sea'];
 export const SEA = 5;
 export const TOPO = 0;
 
@@ -20,10 +20,10 @@ export const lookSliders: Record<number, (LookSlider | null)[]> = {
   ],
   2: [{ label: 'Thickness', min: 0.1, max: 0.9, step: 0.01 }, null, null, null],
   3: [
-    { label: 'Dots', min: 16, max: 160, step: 1 },
-    { label: 'Dot size', min: 0.2, max: 1.4, step: 0.01 },
-    { label: 'Angle', min: 0, max: 90, step: 1 },
-    { label: 'Round ↔ square', min: 0, max: 1, step: 0.01 },
+    { label: 'Stones', min: 3, max: 30, step: 0.5 },
+    { label: 'Grit', min: 0, max: 2, step: 0.01 },
+    { label: 'Torchlight', min: 0, max: 2, step: 0.01 },
+    { label: 'Relief', min: 0, max: 2, step: 0.01 },
   ],
   4: [
     { label: 'Cells', min: 6, max: 90, step: 0.5 },
